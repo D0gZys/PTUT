@@ -208,12 +208,12 @@ try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2)
     sock.connect((HOST, PORT))
-    print("✅ Connecté au serveur CI-V")
+    print("Connecté au serveur CI-V")
     
     # Récupérer la fréquence (rapide)
     print("→ Récupération de la fréquence...")
     get_frequency_fast(sock)
-    print(f"✅ Fréquence: {center_freq_mhz:.6f} MHz")
+    print(f"Fréquence: {center_freq_mhz:.6f} MHz")
     
     # Activer le streaming (sans attente)
     print("→ Activation du streaming spectral...")
@@ -221,7 +221,7 @@ try:
     sock.send(cmd)
     
     # Pas de sleep - on démarre directement
-    print("✅ Streaming activé")
+    print("Streaming activé")
     print()
     print("Affichage en temps réel... (Ctrl+C pour arrêter)")
     print()
@@ -289,9 +289,9 @@ try:
                 new_freq_to_set[0] = new_freq
                 print(f"→ Nouvelle fréquence demandée: {new_freq:.6f} MHz")
             else:
-                print("⚠️ Fréquence hors plage (0.1 - 500 MHz)")
+                print("Fréquence hors plage (0.1 - 500 MHz)")
         except ValueError:
-            print("⚠️ Format invalide. Utilisez un nombre décimal (ex: 145.500)")
+            print("Format invalide. Utilisez un nombre décimal (ex: 145.500)")
     
     freq_textbox.on_submit(on_freq_submit)
     
@@ -381,13 +381,13 @@ try:
         if frame_count % 50 == 0:
             print(f"  {frame_count} trames reçues...")
     
-    print("\n✅ Fenêtre fermée")
+    print("\nFenêtre fermée")
 
 except KeyboardInterrupt:
-    print("\n\n⚠️  Interruption utilisateur")
+    print("\n\nInterruption utilisateur")
 
 except Exception as e:
-    print(f"\n❌ Erreur: {e}")
+    print(f"\nErreur: {e}")
 
 finally:
     # Désactiver le streaming et fermer
@@ -396,7 +396,7 @@ finally:
         sock.send(cmd_off)
         time.sleep(0.2)
         sock.close()
-        print("✅ Connexion fermée proprement")
+        print("Connexion fermée")
     except:
         pass
     
