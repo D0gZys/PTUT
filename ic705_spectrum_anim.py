@@ -109,7 +109,7 @@ class IC705SpectrumDisplay:
         """Active le streaming spectral"""
         cmd = bytes([0xFE, 0xFE, 0xA4, 0xE0, 0x1A, 0x05, 0x00, 0x01, 0xFD])
         self.sock.send(cmd)
-        print("✅ Streaming spectral activé")
+        print("Streaming spectral activé")
     
     def stop_streaming(self):
         """Désactive le streaming spectral"""
@@ -351,7 +351,7 @@ class IC705SpectrumDisplay:
             # Fréquence initiale
             print("→ Récupération de la fréquence...")
             self.get_initial_frequency()
-            print(f"✅ Fréquence: {self.center_freq_mhz:.6f} MHz")
+            print(f"Fréquence: {self.center_freq_mhz:.6f} MHz")
             
             # Streaming
             self.start_streaming()
@@ -359,7 +359,7 @@ class IC705SpectrumDisplay:
             # Figure
             self.setup_figure()
             
-            print("\n🎯 Affichage en temps réel... (Fermez la fenêtre pour arrêter)\n")
+            print("\nAffichage en temps réel)\n")
             
             # Animation avec FuncAnimation
             self.anim = FuncAnimation(
@@ -373,9 +373,9 @@ class IC705SpectrumDisplay:
             plt.show()
             
         except KeyboardInterrupt:
-            print("\n\n⚠️  Interruption utilisateur")
+            print("\n\nInterruption utilisateur")
         except Exception as e:
-            print(f"\n❌ Erreur: {e}")
+            print(f"Erreur: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -389,7 +389,7 @@ class IC705SpectrumDisplay:
                 self.stop_streaming()
                 time.sleep(0.1)
                 self.sock.close()
-                print("✅ Connexion fermée")
+                print("Connexion fermée")
             except:
                 pass
         plt.close('all')
