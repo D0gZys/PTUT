@@ -48,6 +48,10 @@ MAX_LOG_LINES = 200
 LOG_UPDATE_INTERVAL = 300  # Moins fréquent pour économiser des ressources
 MAX_TRAMES_PAR_UPDATE = 15
 DOSSIER_CSV = "recep_csv"
+DB_MIN = -80
+DB_MAX = 50
+WF_CMAP_LINEAR = "viridis"
+WF_CMAP_DB = "inferno"
 
 
 # ============================================================
@@ -203,6 +207,9 @@ class IC705AppV4:
         self.log_spectre = tk.BooleanVar(value=False)
         self.log_autres = tk.BooleanVar(value=True)
         self.log_actif = tk.BooleanVar(value=True)
+        
+        # Options d'affichage CSV
+        self.affichage_db = tk.BooleanVar(value=False)
         
         # Enregistrement CSV
         self.enregistrement_actif = False
@@ -590,8 +597,12 @@ class IC705AppV4:
         self.label_gain.config(text=f"Plage: [{self.gain_min} - {self.gain_max}]")
         
         if hasattr(self, 'ax_spectre'):
-            self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
-            self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
+            if self.mode_lecture_csv and self.affichage_db.get():
+                self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
+                self.image_waterfall.set_clim(vmin=DB_MIN, vmax=DB_MAX)
+            else:
+                self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
+                self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
             self.canvas.draw()
             # Recréer le background après modification
             if hasattr(self, 'use_blit') and self.use_blit:
@@ -646,7 +657,7 @@ class IC705AppV4:
         self.image_waterfall = self.ax_waterfall.imshow(
             np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE)),
             aspect='auto',
-            cmap='viridis',
+            cmap=WF_CMAP_LINEAR,
             vmin=self.gain_min, vmax=self.gain_max,
             origin='upper',
             extent=[freq_min, freq_max, PROFONDEUR_WATERFALL, 0]
@@ -902,6 +913,12 @@ class IC705AppV4:
         Quand force_full=True, on force un draw complet (utile hors mode temps réel)
         pour que la ligne du spectre soit bien visible même en mode lecture CSV.
         """
+        if self.mode_lecture_csv and self.affichage_db.get():
+            if spectre is not None:
+                spectre = self.convertir_spectre_db(spectre)
+            if waterfall is not None:
+                waterfall = self.convertir_spectre_db(waterfall)
+        
         if spectre is not None:
             self.ligne_spectre.set_data(self.axe_freq, spectre)
         if waterfall is not None:
@@ -1060,6 +1077,13 @@ class IC705AppV4:
         if "+" in ts:
             ts = ts.split("+", 1)[0]
         return ts
+
+    @staticmethod
+    def convertir_spectre_db(spectre):
+        """Convertit un spectre en dB pour l'affichage."""
+        valeurs = np.asarray(spectre, dtype=np.float32)
+        valeurs = np.maximum(valeurs, 1e-3)
+        return 20.0 * np.log10(valeurs)
     
     def boucle_log(self):
         """Met à jour le log des trames."""
@@ -1329,16 +1353,26 @@ class IC705AppV4:
     
     def fermer_csv_lecture(self):
         """Ferme le mode lecture CSV."""
+        self.arreter_lecture()
         self.mode_lecture_csv = False
         self.donnees_csv = None
         self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
         self.derniere_ligne_rejouee = None
         self.afficher_panneau_log()
         self.configurer_affichage_csv(False)
+        self.affichage_db.set(False)
+        if hasattr(self, 'image_waterfall'):
+            self.image_waterfall.set_cmap(WF_CMAP_LINEAR)
+            self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
+        if hasattr(self, 'ax_spectre'):
+            self.ax_spectre.set_ylabel("Amplitude")
+            self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
         
         if hasattr(self, 'frame_lecture'):
             self.frame_lecture.destroy()
             del self.frame_lecture
+        if hasattr(self, 'btn_play'):
+            del self.btn_play
         
         self.label_status.config(text="⚪ Non connecté", fg='#ff6666')
         self.btn_ouvrir_csv.config(text="📂 Open CSV")
@@ -1471,6 +1505,18 @@ class IC705AppV4:
         self.slider_zoom_wf.set(self.get_waterfall_zoom_depth())
         self.slider_zoom_wf.pack(side='left', padx=5)
         
+        self.cb_db = tk.Checkbutton(
+            self.frame_lecture,
+            text="dB",
+            variable=self.affichage_db,
+            font=('Helvetica', 10, 'bold'),
+            bg='#1a1a2e',
+            fg='white',
+            selectcolor='#2a2a4e',
+            command=self.on_toggle_db
+        )
+        self.cb_db.pack(side='left', padx=10)
+        
         self.mettre_slider_position(self.index_lecture)
     
     def mettre_slider_position(self, index):
@@ -1494,6 +1540,22 @@ class IC705AppV4:
             return
         self.waterfall_zoom_lignes = max(1, min(lignes, PROFONDEUR_WATERFALL))
         self.appliquer_zoom_waterfall()
+    
+    def on_toggle_db(self):
+        """Bascule l'affichage en dB (lecture CSV)."""
+        if not self.mode_lecture_csv:
+            return
+        if self.affichage_db.get():
+            self.ax_spectre.set_ylabel("Amplitude (dB)")
+            self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
+            self.image_waterfall.set_clim(vmin=DB_MIN, vmax=DB_MAX)
+            self.image_waterfall.set_cmap(WF_CMAP_DB)
+        else:
+            self.ax_spectre.set_ylabel("Amplitude")
+            self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
+            self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
+            self.image_waterfall.set_cmap(WF_CMAP_LINEAR)
+        self.charger_donnees_csv(force_rebuild=True)
     
     def aller_a_position(self, index, force_rebuild=True):
         """Va à une position spécifique dans le CSV."""
@@ -1523,6 +1585,12 @@ class IC705AppV4:
             self.axe_freq = np.linspace(freq_min, freq_max, LARGEUR_SPECTRE)
             self.ax_spectre.set_xlim(freq_min, freq_max)
             self.ax_spectre.set_title(f"Spectre IC-705 - {self.freq_centrale:.3f} MHz (CSV)", color='white')
+            if self.affichage_db.get():
+                self.ax_spectre.set_ylabel("Amplitude (dB)")
+                self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
+            else:
+                self.ax_spectre.set_ylabel("Amplitude")
+                self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
             current_depth = self.waterfall_data.shape[0]
             self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
             self.ax_waterfall.set_xlim(freq_min, freq_max)
@@ -1581,13 +1649,21 @@ class IC705AppV4:
     def demarrer_lecture(self):
         """Démarre la lecture automatique."""
         self.lecture_en_cours = True
-        self.btn_play.config(text="⏸ Pause")
+        if hasattr(self, 'btn_play'):
+            try:
+                self.btn_play.config(text="⏸ Pause")
+            except tk.TclError:
+                pass
         self.lecture_auto()
     
     def arreter_lecture(self):
         """Arrête la lecture automatique."""
         self.lecture_en_cours = False
-        self.btn_play.config(text="▶ Play")
+        if hasattr(self, 'btn_play'):
+            try:
+                self.btn_play.config(text="▶ Play")
+            except tk.TclError:
+                pass
     
     def lecture_auto(self):
         """Boucle de lecture automatique."""
