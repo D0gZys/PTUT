@@ -193,6 +193,8 @@ class IC705AppV4:
         self.interval_maj_temps = 0.2
         self.waterfall_extent = None
         self.use_blit_avant_csv = None
+        self.db_min = DB_MIN
+        self.db_max = DB_MAX
         
         # Paramètres de gain
         self.gain_min = 0
@@ -587,6 +589,24 @@ class IC705AppV4:
     
     def on_slider_change(self, value):
         """Appelé quand un slider change."""
+        if self.mode_lecture_csv and self.affichage_db.get():
+            self.db_min = float(self.slider_min.get())
+            self.db_max = float(self.slider_max.get())
+            
+            if self.db_min >= self.db_max:
+                self.db_min = self.db_max - 1
+                self.slider_min.set(self.db_min)
+            
+            self.label_gain.config(text=f"Plage (dB): [{self.db_min:.1f} - {self.db_max:.1f}]")
+            
+            if hasattr(self, 'ax_spectre'):
+                self.ax_spectre.set_ylim(self.db_min, self.db_max)
+                self.image_waterfall.set_clim(vmin=self.db_min, vmax=self.db_max)
+                self.canvas.draw()
+                if hasattr(self, 'use_blit') and self.use_blit:
+                    self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+            return
+        
         self.gain_min = self.slider_min.get()
         self.gain_max = self.slider_max.get()
         
@@ -597,12 +617,8 @@ class IC705AppV4:
         self.label_gain.config(text=f"Plage: [{self.gain_min} - {self.gain_max}]")
         
         if hasattr(self, 'ax_spectre'):
-            if self.mode_lecture_csv and self.affichage_db.get():
-                self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
-                self.image_waterfall.set_clim(vmin=DB_MIN, vmax=DB_MAX)
-            else:
-                self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
-                self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
+            self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
+            self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
             self.canvas.draw()
             # Recréer le background après modification
             if hasattr(self, 'use_blit') and self.use_blit:
@@ -1078,6 +1094,24 @@ class IC705AppV4:
             ts = ts.split("+", 1)[0]
         return ts
 
+    def configurer_sliders_db(self, actif):
+        """Ajuste les sliders gain pour l'affichage dB en lecture CSV."""
+        if not hasattr(self, 'slider_min') or not hasattr(self, 'slider_max'):
+            return
+        
+        if actif:
+            self.slider_min.config(from_=DB_MIN, to=DB_MAX - 1)
+            self.slider_max.config(from_=DB_MIN + 1, to=DB_MAX)
+            self.slider_min.set(self.db_min)
+            self.slider_max.set(self.db_max)
+            self.label_gain.config(text=f"Plage (dB): [{self.db_min:.1f} - {self.db_max:.1f}]")
+        else:
+            self.slider_min.config(from_=0, to=100)
+            self.slider_max.config(from_=50, to=255)
+            self.slider_min.set(self.gain_min)
+            self.slider_max.set(self.gain_max)
+            self.label_gain.config(text=f"Plage: [{self.gain_min} - {self.gain_max}]")
+
     @staticmethod
     def convertir_spectre_db(spectre):
         """Convertit un spectre en dB pour l'affichage."""
@@ -1367,6 +1401,7 @@ class IC705AppV4:
         if hasattr(self, 'ax_spectre'):
             self.ax_spectre.set_ylabel("Amplitude")
             self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
+        self.configurer_sliders_db(False)
         
         if hasattr(self, 'frame_lecture'):
             self.frame_lecture.destroy()
@@ -1550,11 +1585,13 @@ class IC705AppV4:
             self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
             self.image_waterfall.set_clim(vmin=DB_MIN, vmax=DB_MAX)
             self.image_waterfall.set_cmap(WF_CMAP_DB)
+            self.configurer_sliders_db(True)
         else:
             self.ax_spectre.set_ylabel("Amplitude")
             self.ax_spectre.set_ylim(self.gain_min, self.gain_max)
             self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
             self.image_waterfall.set_cmap(WF_CMAP_LINEAR)
+            self.configurer_sliders_db(False)
         self.charger_donnees_csv(force_rebuild=True)
     
     def aller_a_position(self, index, force_rebuild=True):
