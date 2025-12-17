@@ -179,6 +179,7 @@ class IC705AppV4:
         # Données du spectre et waterfall
         self.spectre_actuel = np.zeros(LARGEUR_SPECTRE)
         self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
+        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
         self.nouvelles_donnees = False
         self.lock_donnees = threading.Lock()
         
@@ -925,6 +926,40 @@ class IC705AppV4:
         else:
             self.canvas.draw_idle()
     
+    def mettre_a_jour_echelle_temps(self):
+        """Mets à jour les ticks Y du waterfall pour afficher les timestamps en lecture CSV."""
+        if not hasattr(self, 'ax_waterfall'):
+            return
+        
+        if not self.mode_lecture_csv:
+            self.ax_waterfall.set_yticks([])
+            self.ax_waterfall.set_yticklabels([])
+            return
+        
+        valides = [(i, ts) for i, ts in enumerate(self.waterfall_time_labels) if ts]
+        if not valides:
+            self.ax_waterfall.set_yticks([])
+            self.ax_waterfall.set_yticklabels([])
+            return
+        
+        nb_ticks = min(6, len(valides))
+        indices = np.linspace(0, len(valides) - 1, nb_ticks, dtype=int)
+        ticks = []
+        labels = []
+        for idx in indices:
+            pos, ts = valides[idx]
+            ticks.append(pos)
+            labels.append(self.formater_label_temps(ts))
+        
+        self.ax_waterfall.set_yticks(ticks)
+        self.ax_waterfall.set_yticklabels(labels, color='white', fontsize=8)
+        self.canvas.draw_idle()
+    
+    @staticmethod
+    def formater_label_temps(ts):
+        """Retourne une version compacte du timestamp pour l'affichage."""
+        return ts[-12:] if len(ts) > 12 else ts
+    
     def boucle_log(self):
         """Met à jour le log des trames."""
         if not self.affichage_actif:
@@ -1205,10 +1240,12 @@ class IC705AppV4:
         
         self.spectre_actuel = np.zeros(LARGEUR_SPECTRE)
         self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
+        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
         self.freq_centrale = FREQUENCE_DEFAUT
         self.mettre_a_jour_axe_freq()
         
         self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
+        self.mettre_a_jour_echelle_temps()
     
     def creer_controles_lecture(self):
         """Crée les contrôles pour naviguer dans le CSV."""
@@ -1342,15 +1379,22 @@ class IC705AppV4:
         
         start_idx = max(0, self.index_lecture - PROFONDEUR_WATERFALL + 1)
         waterfall_lines = []
+        waterfall_times = []
         for i in range(start_idx, self.index_lecture + 1):
             waterfall_lines.append(self.donnees_csv[i]['spectre'])
+            waterfall_times.append(self.donnees_csv[i]['timestamp'])
         
         self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
-        for i, line in enumerate(reversed(waterfall_lines)):
-            if i < PROFONDEUR_WATERFALL:
-                self.waterfall_data[i] = line
+        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
+        total_lignes = len(waterfall_lines)
+        max_lignes = min(PROFONDEUR_WATERFALL, total_lignes)
+        for i in range(max_lignes):
+            src_idx = total_lignes - 1 - i
+            self.waterfall_data[i] = waterfall_lines[src_idx]
+            self.waterfall_time_labels[i] = waterfall_times[src_idx]
         
         self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
+        self.mettre_a_jour_echelle_temps()
         
         self.label_freq.config(text=f"{self.freq_centrale:.3f} MHz")
         if hasattr(self, 'label_position'):
