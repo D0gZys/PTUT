@@ -48,9 +48,6 @@ MAX_LOG_LINES = 200
 LOG_UPDATE_INTERVAL = 300  # Moins fréquent pour économiser des ressources
 MAX_TRAMES_PAR_UPDATE = 15
 DOSSIER_CSV = "recep_csv"
-LOCKIN_BW_KHZ_DEFAULT = 5.0  # Bande passante (FWHM) pour le filtrage lock-in
-LOCKIN_BASELINE_ALPHA = 0.02  # vitesse de suivi du bruit
-LOCKIN_SMOOTH_TAPS = 25       # taille noyau lissage fréquentiel
 
 
 # ============================================================
@@ -198,12 +195,6 @@ class IC705AppV4:
         self.log_spectre = tk.BooleanVar(value=False)
         self.log_autres = tk.BooleanVar(value=True)
         self.log_actif = tk.BooleanVar(value=True)
-
-        # Lock-in / filtrage synchrone
-        self.lockin_actif = tk.BooleanVar(value=False)
-        self.lockin_bw_var = tk.DoubleVar(value=LOCKIN_BW_KHZ_DEFAULT)
-        self.lockin_baseline = None
-        self.lockin_kernel = None
         
         # Enregistrement CSV
         self.enregistrement_actif = False
@@ -314,39 +305,6 @@ class IC705AppV4:
                                      justify='center')
         self.entry_seuil.insert(0, "70")
         self.entry_seuil.pack(side='left', padx=2)
-
-        # Bouton lock-in et réglage bande
-        frame_lockin = tk.Frame(frame_controles, bg='#1a1a2e')
-        frame_lockin.pack(side='left', padx=5)
-
-        self.cb_lockin = tk.Checkbutton(
-            frame_lockin,
-            text="Lock-in",
-            variable=self.lockin_actif,
-            font=('Helvetica', 10, 'bold'),
-            bg='#1a1a2e',
-            fg='white',
-            selectcolor='#2a2a4e',
-            command=self.on_toggle_lockin
-        )
-        self.cb_lockin.pack(side='left')
-
-        tk.Label(
-            frame_lockin,
-            text="BW kHz:",
-            fg='white',
-            bg='#1a1a2e',
-            font=('Helvetica', 10)
-        ).pack(side='left', padx=(6, 2))
-
-        self.entry_lockin_bw = tk.Entry(
-            frame_lockin,
-            width=4,
-            font=('Helvetica', 10),
-            justify='center',
-            textvariable=self.lockin_bw_var
-        )
-        self.entry_lockin_bw.pack(side='left')
         
         # Bouton ouvrir CSV
         self.btn_ouvrir_csv = tk.Button(
@@ -368,15 +326,6 @@ class IC705AppV4:
         )
         self.label_status.pack(side='right', padx=10)
         
-        self.label_lockin_value = tk.Label(
-            frame_controles,
-            text="",
-            font=("Helvetica", 11, "bold"),
-            fg='#66ccff',
-            bg='#1a1a2e'
-        )
-        self.label_lockin_value.pack(side='right', padx=5)
-
         # Fréquence
         self.label_freq = tk.Label(
             frame_controles,
@@ -688,7 +637,6 @@ class IC705AppV4:
         # Sauvegarder le background pour le blitting (optimisation)
         self.background = self.canvas.copy_from_bbox(self.fig.bbox)
         self.use_blit = True
-        self.reset_lockin_state()
     
     def mettre_a_jour_axe_freq(self):
         """Met à jour l'axe des fréquences quand la fréquence centrale change."""
@@ -708,91 +656,7 @@ class IC705AppV4:
         # Recréer le background après modification
         if hasattr(self, 'use_blit') and self.use_blit:
             self.background = self.canvas.copy_from_bbox(self.fig.bbox)
-        self.lockin_freq_estimee = self.freq_centrale
-
-    def reset_lockin_state(self):
-        """Réinitialise les accumulateurs du lock-in."""
-        self.lockin_baseline = np.zeros(LARGEUR_SPECTRE, dtype=np.float32)
-        if self.lockin_kernel is None:
-            self.lockin_kernel = self.creer_kernel_lockin()
-
-    def creer_kernel_lockin(self):
-        """Crée un noyau gaussien pour lisser les amplitudes."""
-        taille = LOCKIN_SMOOTH_TAPS
-        if taille < 3:
-            taille = 3
-        if taille % 2 == 0:
-            taille += 1
-        centre = taille // 2
-        sigma = max(1.0, taille / 6.0)
-        x = np.arange(taille, dtype=np.float32) - centre
-        noyau = np.exp(-0.5 * (x / sigma) ** 2)
-        noyau /= np.sum(noyau)
-        return noyau.astype(np.float32)
-
-    def calculer_fenetre_lockin(self, centre_mhz):
-        """Calcule une fenêtre gaussienne centrée sur la fréquence cible."""
-        try:
-            bande_khz = float(self.lockin_bw_var.get())
-        except (tk.TclError, ValueError):
-            bande_khz = LOCKIN_BW_KHZ_DEFAULT
-            self.lockin_bw_var.set(bande_khz)
-
-        bande_khz = max(0.1, bande_khz)
-        # Convertir une largeur à mi-hauteur en écart-type (gaussienne)
-        sigma_mhz = (bande_khz / 1000.0) / 2.355
-        if sigma_mhz <= 0:
-            return np.ones(LARGEUR_SPECTRE, dtype=np.float32)
-
-        delta = self.axe_freq - centre_mhz
-        fenetre = np.exp(-0.5 * (delta / sigma_mhz) ** 2).astype(np.float32)
-        max_f = np.max(fenetre)
-        if max_f <= 0:
-            return np.ones(LARGEUR_SPECTRE, dtype=np.float32)
-        return fenetre / max_f
-
-    def appliquer_lockin(self, spectre, waterfall=None):
-        """Supprime le bruit et suit automatiquement la fréquence dominante."""
-        if self.lockin_baseline is None or self.lockin_baseline.shape[0] != LARGEUR_SPECTRE:
-            self.reset_lockin_state()
-        if self.lockin_kernel is None:
-            self.lockin_kernel = self.creer_kernel_lockin()
-
-        # Mise à jour du niveau de bruit (moyenne glissante)
-        self.lockin_baseline = (1 - LOCKIN_BASELINE_ALPHA) * self.lockin_baseline + LOCKIN_BASELINE_ALPHA * spectre
-        exces = np.clip(spectre - self.lockin_baseline, 0, None)
-
-        # Lissage fréquentiel pour atténuer le bruit impulsif
-        exces_lisse = np.convolve(exces, self.lockin_kernel, mode='same')
-
-        # Déterminer la fréquence de plus fort gain (suivi du sweep)
-        idx_max = int(np.argmax(exces_lisse))
-        freq_cible = float(self.axe_freq[idx_max])
-
-        # Fenêtre centrée sur la fréquence détectée
-        fenetre = self.calculer_fenetre_lockin(freq_cible)
-        signal_cible = exces_lisse * fenetre
-
-        spectre_filtre = self.lockin_baseline + signal_cible
-
-        if waterfall is not None:
-            baseline_2d = self.lockin_baseline[np.newaxis, :]
-            waterfall_exces = np.clip(waterfall - baseline_2d, 0, None)
-            waterfall_filtre = baseline_2d + waterfall_exces * fenetre[np.newaxis, :]
-        else:
-            waterfall_filtre = None
-
-        valeur = float(np.max(signal_cible))
-        return spectre_filtre, waterfall_filtre, valeur, freq_cible
-
-    def on_toggle_lockin(self):
-        """Callback lorsque la case Lock-in change."""
-        if self.lockin_actif.get():
-            self.reset_lockin_state()
-            self.label_lockin_value.config(text="Lock-in prêt")
-        else:
-            self.label_lockin_value.config(text="")
-
+    
     def toggle_connexion(self):
         """Connecte ou déconnecte du serveur."""
         if not self.connecte:
@@ -996,55 +860,53 @@ class IC705AppV4:
                 spectre = None
                 waterfall = None
         
-        lockin_text = ""
-
         if spectre is not None:
-            spectre_affiche = spectre
-            waterfall_affiche = waterfall
-
-            if self.lockin_actif.get():
-                spectre_affiche, waterfall_affiche, valeur_lockin, freq_cible = self.appliquer_lockin(spectre_affiche, waterfall_affiche)
-                lockin_text = f"Lock-in: {valeur_lockin:.1f} @ {freq_cible:.4f} MHz"
-            else:
-                lockin_text = ""
-
-            try:
-                if self.use_blit and hasattr(self, 'background'):
-                    # Utiliser le blitting pour de meilleures performances
-                    self.canvas.restore_region(self.background)
-                    
-                    # Mise à jour du spectre
-                    self.ligne_spectre.set_data(self.axe_freq, spectre_affiche)
-                    
-                    # Mise à jour du waterfall
-                    self.image_waterfall.set_data(waterfall_affiche)
-                    
-                    # Redessiner uniquement les éléments modifiés
-                    self.ax_spectre.draw_artist(self.ligne_spectre)
-                    self.ax_waterfall.draw_artist(self.image_waterfall)
-                    
-                    # Rafraîchir le canvas
-                    self.canvas.blit(self.fig.bbox)
-                    self.canvas.flush_events()
-                else:
-                    # Fallback sans blitting
-                    self.ligne_spectre.set_data(self.axe_freq, spectre_affiche)
-                    self.image_waterfall.set_data(waterfall_affiche)
-                    self.canvas.draw_idle()
-            except:
-                # Si le blitting échoue, désactiver et utiliser draw_idle
-                self.use_blit = False
-                self.ligne_spectre.set_data(self.axe_freq, spectre_affiche)
-                self.image_waterfall.set_data(waterfall_affiche)
-                self.canvas.draw_idle()
-        else:
-            lockin_text = ""
-
-        if hasattr(self, 'label_lockin_value'):
-            self.label_lockin_value.config(text=lockin_text)
+            self.rafraichir_graphique(spectre, waterfall)
         
         # Planifier la prochaine mise à jour (40ms = 25 FPS)
         self.root.after(40, self.boucle_affichage)
+    
+    def rafraichir_graphique(self, spectre=None, waterfall=None, force_full=False):
+        """
+        Redessine le spectre et/ou le waterfall.
+        
+        Quand force_full=True, on force un draw complet (utile hors mode temps réel)
+        pour que la ligne du spectre soit bien visible même en mode lecture CSV.
+        """
+        if spectre is not None:
+            self.ligne_spectre.set_data(self.axe_freq, spectre)
+        if waterfall is not None:
+            self.image_waterfall.set_data(waterfall)
+        
+        use_blit = getattr(self, 'use_blit', False) and hasattr(self, 'background')
+        
+        if use_blit and not force_full:
+            try:
+                self.canvas.restore_region(self.background)
+                if spectre is not None:
+                    self.ax_spectre.draw_artist(self.ligne_spectre)
+                if waterfall is not None:
+                    self.ax_waterfall.draw_artist(self.image_waterfall)
+                self.canvas.blit(self.fig.bbox)
+                self.canvas.flush_events()
+                return
+            except Exception:
+                self.use_blit = False
+                use_blit = False
+        
+        if force_full:
+            # Les artistes "animated" doivent être temporairement désactivés
+            # pour être pris en compte lors d'un draw complet.
+            was_animated = self.ligne_spectre.get_animated()
+            if was_animated:
+                self.ligne_spectre.set_animated(False)
+            self.canvas.draw()
+            if was_animated:
+                self.ligne_spectre.set_animated(True)
+            if getattr(self, 'use_blit', False):
+                self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+        else:
+            self.canvas.draw_idle()
     
     def boucle_log(self):
         """Met à jour le log des trames."""
@@ -1327,9 +1189,7 @@ class IC705AppV4:
         self.freq_centrale = FREQUENCE_DEFAUT
         self.mettre_a_jour_axe_freq()
         
-        self.ligne_spectre.set_data(self.axe_freq, self.spectre_actuel)
-        self.image_waterfall.set_data(self.waterfall_data)
-        self.canvas.draw()
+        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
     
     def creer_controles_lecture(self):
         """Crée les contrôles pour naviguer dans le CSV."""
@@ -1471,9 +1331,7 @@ class IC705AppV4:
             if i < PROFONDEUR_WATERFALL:
                 self.waterfall_data[i] = line
         
-        self.ligne_spectre.set_data(self.axe_freq, self.spectre_actuel)
-        self.image_waterfall.set_data(self.waterfall_data)
-        self.canvas.draw()
+        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
         
         self.label_freq.config(text=f"{self.freq_centrale:.3f} MHz")
         if hasattr(self, 'label_position'):
