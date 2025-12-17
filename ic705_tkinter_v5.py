@@ -180,6 +180,7 @@ class IC705AppV4:
         self.spectre_actuel = np.zeros(LARGEUR_SPECTRE)
         self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
         self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
+        self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
         self.nouvelles_donnees = False
         self.lock_donnees = threading.Lock()
         
@@ -644,6 +645,7 @@ class IC705AppV4:
             origin='upper',
             extent=[freq_min, freq_max, PROFONDEUR_WATERFALL, 0]
         )
+        self.ax_waterfall.set_ylim(self.image_waterfall.get_extent()[2], 0)
         
         self.fig.tight_layout()
         
@@ -668,8 +670,10 @@ class IC705AppV4:
         
         self.ax_spectre.set_xlim(freq_min, freq_max)
         self.ax_spectre.set_title(f'Spectre IC-705 - {self.freq_centrale:.3f} MHz', color='white')
-        self.image_waterfall.set_extent([freq_min, freq_max, PROFONDEUR_WATERFALL, 0])
+        current_depth = self.image_waterfall.get_array().shape[0] if hasattr(self.image_waterfall, 'get_array') else PROFONDEUR_WATERFALL
+        self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
         self.ax_waterfall.set_xlim(freq_min, freq_max)
+        self.ax_waterfall.set_ylim(current_depth, 0)
         self.canvas.draw()
         # Recréer le background après modification
         if hasattr(self, 'use_blit') and self.use_blit:
@@ -894,7 +898,13 @@ class IC705AppV4:
         if spectre is not None:
             self.ligne_spectre.set_data(self.axe_freq, spectre)
         if waterfall is not None:
+            waterfall = self.preparer_waterfall_pour_affichage(waterfall)
             self.image_waterfall.set_data(waterfall)
+            depth = waterfall.shape[0]
+            freq_min = self.axe_freq[0] if len(self.axe_freq) > 0 else 0
+            freq_max = self.axe_freq[-1] if len(self.axe_freq) > 0 else 0
+            self.image_waterfall.set_extent([freq_min, freq_max, depth, 0])
+            self.ax_waterfall.set_ylim(depth, 0)
         
         use_blit = getattr(self, 'use_blit', False) and hasattr(self, 'background')
         
@@ -926,6 +936,25 @@ class IC705AppV4:
         else:
             self.canvas.draw_idle()
     
+    def preparer_waterfall_pour_affichage(self, waterfall):
+        """Retourne les données waterfall en tenant compte du zoom."""
+        total_lignes = waterfall.shape[0]
+        if not self.mode_lecture_csv:
+            return waterfall
+        lignes_voulues = min(self.get_waterfall_zoom_depth(), total_lignes)
+        return waterfall[:lignes_voulues, :]
+    
+    def get_waterfall_zoom_depth(self):
+        """Nombre de lignes de waterfall à afficher (mode lecture)."""
+        return max(1, min(getattr(self, 'waterfall_zoom_lignes', PROFONDEUR_WATERFALL), PROFONDEUR_WATERFALL))
+    
+    def appliquer_zoom_waterfall(self):
+        """Réapplique le zoom waterfall (utilisé lors d'un changement de slider)."""
+        if not self.mode_lecture_csv:
+            return
+        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
+        self.mettre_a_jour_echelle_temps()
+    
     def mettre_a_jour_echelle_temps(self):
         """Mets à jour les ticks Y du waterfall pour afficher les timestamps en lecture CSV."""
         if not hasattr(self, 'ax_waterfall'):
@@ -936,7 +965,8 @@ class IC705AppV4:
             self.ax_waterfall.set_yticklabels([])
             return
         
-        valides = [(i, ts) for i, ts in enumerate(self.waterfall_time_labels) if ts]
+        depth = self.image_waterfall.get_array().shape[0] if hasattr(self.image_waterfall, 'get_array') else 0
+        valides = [(i, ts) for i, ts in enumerate(self.waterfall_time_labels[:depth]) if ts]
         if not valides:
             self.ax_waterfall.set_yticks([])
             self.ax_waterfall.set_yticklabels([])
@@ -1204,6 +1234,7 @@ class IC705AppV4:
             
             print(f"CSV chargé: {len(self.donnees_csv)} lignes valides")
             
+            self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
             self.mode_lecture_csv = True
             self.index_lecture = 0
             self.masquer_panneau_log()
@@ -1225,6 +1256,7 @@ class IC705AppV4:
         """Ferme le mode lecture CSV."""
         self.mode_lecture_csv = False
         self.donnees_csv = None
+        self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
         self.afficher_panneau_log()
         
         if hasattr(self, 'frame_lecture'):
@@ -1338,10 +1370,42 @@ class IC705AppV4:
         )
         self.slider_vitesse.set(10)
         self.slider_vitesse.pack(side='left', padx=5)
+        
+        tk.Label(
+            self.frame_lecture,
+            text="Zoom WF:",
+            font=("Helvetica", 10),
+            fg='#aaaaaa',
+            bg='#1a1a2e'
+        ).pack(side='left', padx=5)
+        
+        self.slider_zoom_wf = tk.Scale(
+            self.frame_lecture,
+            from_=5, to=PROFONDEUR_WATERFALL,
+            orient='horizontal',
+            length=120,
+            bg='#2a2a4e',
+            fg='white',
+            troughcolor='#1a1a3e',
+            highlightthickness=0,
+            font=('Helvetica', 9),
+            command=self.on_zoom_waterfall_change
+        )
+        self.slider_zoom_wf.set(self.get_waterfall_zoom_depth())
+        self.slider_zoom_wf.pack(side='left', padx=5)
     
     def on_slider_position_change(self, value):
         """Appelé quand le slider de position change."""
         self.aller_a_position(int(value))
+    
+    def on_zoom_waterfall_change(self, value):
+        """Change le zoom du waterfall (lecture CSV)."""
+        try:
+            lignes = int(float(value))
+        except (TypeError, ValueError):
+            return
+        self.waterfall_zoom_lignes = max(1, min(lignes, PROFONDEUR_WATERFALL))
+        self.appliquer_zoom_waterfall()
     
     def aller_a_position(self, index):
         """Va à une position spécifique dans le CSV."""
