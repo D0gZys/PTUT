@@ -183,6 +183,12 @@ class IC705AppV4:
         self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
         self.nouvelles_donnees = False
         self.lock_donnees = threading.Lock()
+        self.derniere_ligne_rejouee = None
+        self.slider_update_en_cours = False
+        self.derniere_maj_temps = 0.0
+        self.interval_maj_temps = 0.2
+        self.waterfall_extent = None
+        self.use_blit_avant_csv = None
         
         # Paramètres de gain
         self.gain_min = 0
@@ -674,6 +680,7 @@ class IC705AppV4:
         self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
         self.ax_waterfall.set_xlim(freq_min, freq_max)
         self.ax_waterfall.set_ylim(current_depth, 0)
+        self.waterfall_extent = (freq_min, freq_max, current_depth, 0)
         self.canvas.draw()
         # Recréer le background après modification
         if hasattr(self, 'use_blit') and self.use_blit:
@@ -903,8 +910,12 @@ class IC705AppV4:
             depth = waterfall.shape[0]
             freq_min = self.axe_freq[0] if len(self.axe_freq) > 0 else 0
             freq_max = self.axe_freq[-1] if len(self.axe_freq) > 0 else 0
-            self.image_waterfall.set_extent([freq_min, freq_max, depth, 0])
-            self.ax_waterfall.set_ylim(depth, 0)
+            new_extent = (freq_min, freq_max, depth, 0)
+            if self.waterfall_extent != new_extent:
+                self.image_waterfall.set_extent(new_extent)
+                self.ax_waterfall.set_xlim(freq_min, freq_max)
+                self.ax_waterfall.set_ylim(depth, 0)
+                self.waterfall_extent = new_extent
         
         use_blit = getattr(self, 'use_blit', False) and hasattr(self, 'background')
         
@@ -923,16 +934,21 @@ class IC705AppV4:
                 use_blit = False
         
         if force_full:
-            # Les artistes "animated" doivent être temporairement désactivés
-            # pour être pris en compte lors d'un draw complet.
-            was_animated = self.ligne_spectre.get_animated()
-            if was_animated:
-                self.ligne_spectre.set_animated(False)
-            self.canvas.draw()
-            if was_animated:
+            use_blit = getattr(self, 'use_blit', False)
+            if use_blit:
+                # Recréer un background propre sans la ligne animée pour éviter les "doublons".
                 self.ligne_spectre.set_animated(True)
-            if getattr(self, 'use_blit', False):
+                self.canvas.draw()
                 self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+                self.ax_spectre.draw_artist(self.ligne_spectre)
+                self.canvas.blit(self.fig.bbox)
+            else:
+                was_animated = self.ligne_spectre.get_animated()
+                if was_animated:
+                    self.ligne_spectre.set_animated(False)
+                self.canvas.draw()
+                if was_animated:
+                    self.ligne_spectre.set_animated(True)
         else:
             self.canvas.draw_idle()
     
@@ -953,9 +969,29 @@ class IC705AppV4:
         if not self.mode_lecture_csv:
             return
         self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-        self.mettre_a_jour_echelle_temps()
+        self.mettre_a_jour_echelle_temps(force=True)
     
-    def mettre_a_jour_echelle_temps(self):
+    def configurer_affichage_csv(self, actif):
+        """Active/désactive le mode affichage CSV (sans blitting pour éviter le clignotement)."""
+        if actif:
+            self.use_blit_avant_csv = getattr(self, 'use_blit', False)
+            self.use_blit = False
+            if hasattr(self, 'ligne_spectre'):
+                self.ligne_spectre.set_animated(False)
+        else:
+            if self.use_blit_avant_csv:
+                self.use_blit = True
+                if hasattr(self, 'ligne_spectre'):
+                    self.ligne_spectre.set_animated(True)
+                if hasattr(self, 'canvas') and hasattr(self, 'fig'):
+                    self.canvas.draw()
+                    self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+            else:
+                self.use_blit = False
+                if hasattr(self, 'ligne_spectre'):
+                    self.ligne_spectre.set_animated(False)
+    
+    def mettre_a_jour_echelle_temps(self, force=False):
         """Mets à jour les ticks Y du waterfall pour afficher les timestamps en lecture CSV."""
         if not hasattr(self, 'ax_waterfall'):
             return
@@ -964,6 +1000,11 @@ class IC705AppV4:
             self.ax_waterfall.set_yticks([])
             self.ax_waterfall.set_yticklabels([])
             return
+        
+        now = time.monotonic()
+        if not force and (now - self.derniere_maj_temps) < self.interval_maj_temps:
+            return
+        self.derniere_maj_temps = now
         
         depth = self.image_waterfall.get_array().shape[0] if hasattr(self.image_waterfall, 'get_array') else 0
         valides = [(i, ts) for i, ts in enumerate(self.waterfall_time_labels[:depth]) if ts]
@@ -987,8 +1028,38 @@ class IC705AppV4:
     
     @staticmethod
     def formater_label_temps(ts):
-        """Retourne une version compacte du timestamp pour l'affichage."""
-        return ts[-12:] if len(ts) > 12 else ts
+        """Retourne une version lisible du timestamp pour l'affichage."""
+        if ts is None:
+            return ""
+        ts = str(ts).strip()
+        if not ts:
+            return ""
+        
+        formats = (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%H:%M:%S.%f",
+            "%H:%M:%S",
+        )
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(ts, fmt)
+                if "%f" in fmt:
+                    return dt.strftime("%H:%M:%S.%f")[:-3]
+                return dt.strftime("%H:%M:%S")
+            except ValueError:
+                continue
+        
+        # Fallback: extraire la partie temps si possible
+        if "T" in ts:
+            ts = ts.split("T", 1)[-1]
+        if " " in ts:
+            ts = ts.split(" ", 1)[-1]
+        if ts.endswith("Z"):
+            ts = ts[:-1]
+        if "+" in ts:
+            ts = ts.split("+", 1)[0]
+        return ts
     
     def boucle_log(self):
         """Met à jour le log des trames."""
@@ -1206,12 +1277,14 @@ class IC705AppV4:
                     if len(row) >= nb_colonnes_attendues:
                         try:
                             timestamp = row[0]
+                            timestamp_label = self.formater_label_temps(timestamp)
                             freq = float(row[1])
                             span = int(row[2])
                             # Prendre exactement LARGEUR_SPECTRE valeurs
                             valeurs = np.array([float(v) for v in row[3:3+LARGEUR_SPECTRE]])
                             self.donnees_csv.append({
                                 'timestamp': timestamp,
+                                'timestamp_label': timestamp_label,
                                 'freq': freq,
                                 'span': span,
                                 'spectre': valeurs
@@ -1235,9 +1308,11 @@ class IC705AppV4:
             print(f"CSV chargé: {len(self.donnees_csv)} lignes valides")
             
             self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
+            self.derniere_ligne_rejouee = None
             self.mode_lecture_csv = True
             self.index_lecture = 0
             self.masquer_panneau_log()
+            self.configurer_affichage_csv(True)
             
             self.label_status.config(text=f"📂 CSV: {len(self.donnees_csv)} lignes", fg='#00ccff')
             self.btn_ouvrir_csv.config(text="❌ Fermer CSV")
@@ -1246,7 +1321,7 @@ class IC705AppV4:
             self.entry_ip.config(state='disabled')
             self.entry_port.config(state='disabled')
             
-            self.charger_donnees_csv()
+            self.charger_donnees_csv(force_rebuild=True)
             self.creer_controles_lecture()
             
         except Exception as e:
@@ -1257,7 +1332,9 @@ class IC705AppV4:
         self.mode_lecture_csv = False
         self.donnees_csv = None
         self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
+        self.derniere_ligne_rejouee = None
         self.afficher_panneau_log()
+        self.configurer_affichage_csv(False)
         
         if hasattr(self, 'frame_lecture'):
             self.frame_lecture.destroy()
@@ -1277,7 +1354,7 @@ class IC705AppV4:
         self.mettre_a_jour_axe_freq()
         
         self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-        self.mettre_a_jour_echelle_temps()
+        self.mettre_a_jour_echelle_temps(force=True)
     
     def creer_controles_lecture(self):
         """Crée les contrôles pour naviguer dans le CSV."""
@@ -1393,10 +1470,21 @@ class IC705AppV4:
         )
         self.slider_zoom_wf.set(self.get_waterfall_zoom_depth())
         self.slider_zoom_wf.pack(side='left', padx=5)
+        
+        self.mettre_slider_position(self.index_lecture)
+    
+    def mettre_slider_position(self, index):
+        """Met à jour le slider de position sans déclencher d'événement."""
+        if hasattr(self, 'slider_position'):
+            self.slider_update_en_cours = True
+            self.slider_position.set(index)
+            self.slider_update_en_cours = False
     
     def on_slider_position_change(self, value):
         """Appelé quand le slider de position change."""
-        self.aller_a_position(int(value))
+        if self.slider_update_en_cours:
+            return
+        self.aller_a_position(int(value), force_rebuild=True)
     
     def on_zoom_waterfall_change(self, value):
         """Change le zoom du waterfall (lecture CSV)."""
@@ -1407,64 +1495,81 @@ class IC705AppV4:
         self.waterfall_zoom_lignes = max(1, min(lignes, PROFONDEUR_WATERFALL))
         self.appliquer_zoom_waterfall()
     
-    def aller_a_position(self, index):
+    def aller_a_position(self, index, force_rebuild=True):
         """Va à une position spécifique dans le CSV."""
         if not self.donnees_csv or index < 0 or index >= len(self.donnees_csv):
             return
         
         self.index_lecture = index
-        self.charger_donnees_csv()
-        self.slider_position.set(index)
+        self.charger_donnees_csv(force_rebuild=force_rebuild)
+        self.mettre_slider_position(index)
     
-    def charger_donnees_csv(self):
+    def charger_donnees_csv(self, force_rebuild=False):
         """Charge et affiche les données à la position actuelle."""
         if not self.donnees_csv:
             return
         
         data = self.donnees_csv[self.index_lecture]
         
-        # Vérifier que le spectre a la bonne taille
         if len(data['spectre']) != LARGEUR_SPECTRE:
             print(f"Attention: spectre ligne {self.index_lecture} a {len(data['spectre'])} points au lieu de {LARGEUR_SPECTRE}")
         
-        if data['freq'] != self.freq_centrale:
+        freq_changed = data['freq'] != self.freq_centrale
+        if freq_changed:
             self.freq_centrale = data['freq']
-            demi_span = data['span'] / 2000
+            demi_span = SPAN_KHZ / 2000
             freq_min = self.freq_centrale - demi_span
             freq_max = self.freq_centrale + demi_span
             self.axe_freq = np.linspace(freq_min, freq_max, LARGEUR_SPECTRE)
-            
             self.ax_spectre.set_xlim(freq_min, freq_max)
             self.ax_spectre.set_title(f"Spectre IC-705 - {self.freq_centrale:.3f} MHz (CSV)", color='white')
-            self.image_waterfall.set_extent([freq_min, freq_max, PROFONDEUR_WATERFALL, 0])
+            current_depth = self.waterfall_data.shape[0]
+            self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
+            self.ax_waterfall.set_xlim(freq_min, freq_max)
+            self.ax_waterfall.set_ylim(current_depth, 0)
+            self.waterfall_extent = (freq_min, freq_max, current_depth, 0)
             self.ligne_centre.set_xdata([self.freq_centrale, self.freq_centrale])
         
-        self.spectre_actuel = data['spectre'].copy()
+        self.spectre_actuel = data['spectre']
         
-        start_idx = max(0, self.index_lecture - PROFONDEUR_WATERFALL + 1)
-        waterfall_lines = []
-        waterfall_times = []
-        for i in range(start_idx, self.index_lecture + 1):
-            waterfall_lines.append(self.donnees_csv[i]['spectre'])
-            waterfall_times.append(self.donnees_csv[i]['timestamp'])
+        if not force_rebuild and self.derniere_ligne_rejouee is not None and self.index_lecture == self.derniere_ligne_rejouee + 1:
+            self.mettre_a_jour_waterfall_incremental(data)
+            force_full = False
+        else:
+            self.reconstruire_waterfall_depuis_index()
+            force_full = True
         
-        self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
-        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
-        total_lignes = len(waterfall_lines)
-        max_lignes = min(PROFONDEUR_WATERFALL, total_lignes)
-        for i in range(max_lignes):
-            src_idx = total_lignes - 1 - i
-            self.waterfall_data[i] = waterfall_lines[src_idx]
-            self.waterfall_time_labels[i] = waterfall_times[src_idx]
+        self.derniere_ligne_rejouee = self.index_lecture
         
-        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-        self.mettre_a_jour_echelle_temps()
+        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=force_full)
+        self.mettre_a_jour_echelle_temps(force=force_full)
         
         self.label_freq.config(text=f"{self.freq_centrale:.3f} MHz")
         if hasattr(self, 'label_position'):
             self.label_position.config(
-                text=f"{self.index_lecture + 1} / {len(self.donnees_csv)} - {data['timestamp'][-12:]}"
+                text=f"{self.index_lecture + 1} / {len(self.donnees_csv)} - {data.get('timestamp_label', data['timestamp'])}"
             )
+    
+    def mettre_a_jour_waterfall_incremental(self, data):
+        """Décale le waterfall et insère la nouvelle ligne (lecture séquentielle)."""
+        self.waterfall_data[1:] = self.waterfall_data[:-1]
+        self.waterfall_data[0] = data['spectre']
+        self.waterfall_time_labels[1:] = self.waterfall_time_labels[:-1]
+        self.waterfall_time_labels[0] = data.get('timestamp_label', data['timestamp'])
+    
+    def reconstruire_waterfall_depuis_index(self):
+        """Reconstruit entièrement le waterfall autour de l'index courant."""
+        self.waterfall_data.fill(0)
+        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
+        
+        dest = 0
+        for src in range(self.index_lecture, -1, -1):
+            if dest >= PROFONDEUR_WATERFALL:
+                break
+            ligne = self.donnees_csv[src]['spectre']
+            self.waterfall_data[dest] = ligne
+            self.waterfall_time_labels[dest] = self.donnees_csv[src].get('timestamp_label', self.donnees_csv[src]['timestamp'])
+            dest += 1
     
     def toggle_lecture(self):
         """Démarre ou arrête la lecture automatique."""
@@ -1491,8 +1596,8 @@ class IC705AppV4:
         
         if self.index_lecture < len(self.donnees_csv) - 1:
             self.index_lecture += 1
-            self.charger_donnees_csv()
-            self.slider_position.set(self.index_lecture)
+            self.charger_donnees_csv(force_rebuild=False)
+            self.mettre_slider_position(self.index_lecture)
             
             vitesse = self.slider_vitesse.get()
             delai = max(4, 200 // vitesse)
