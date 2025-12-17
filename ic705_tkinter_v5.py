@@ -402,17 +402,20 @@ class IC705AppV4:
         self.frame_graph.pack(side='left', fill='both', expand=True)
         
         # Frame droite pour le log des trames
+        self.frame_log = None
+        self.log_visible = True
         self.creer_panneau_log()
     
     def creer_panneau_log(self):
         """Crée le panneau de log des trames CI-V."""
-        frame_log = tk.Frame(self.frame_principal, bg='#1a1a2e', width=400)
-        frame_log.pack(side='right', fill='y', padx=(10, 0))
-        frame_log.pack_propagate(False)
+        if self.frame_log is None:
+            self.frame_log = tk.Frame(self.frame_principal, bg='#1a1a2e', width=400)
+        self.frame_log.pack(side='right', fill='y', padx=(10, 0))
+        self.frame_log.pack_propagate(False)
         
         # Titre du panneau
         titre_log = tk.Label(
-            frame_log,
+            self.frame_log,
             text="📋 Trames CI-V Reçues",
             font=("Helvetica", 12, "bold"),
             fg='#00ff88',
@@ -421,7 +424,7 @@ class IC705AppV4:
         titre_log.pack(pady=(0, 5))
         
         # Options de filtrage
-        frame_options = tk.Frame(frame_log, bg='#1a1a2e')
+        frame_options = tk.Frame(self.frame_log, bg='#1a1a2e')
         frame_options.pack(fill='x', pady=5)
         
         cb_spectre = tk.Checkbutton(
@@ -464,7 +467,7 @@ class IC705AppV4:
         btn_clear.pack(side='right', padx=5)
         
         # Zone de texte avec scrollbar
-        frame_text = tk.Frame(frame_log, bg='#0a0a1a')
+        frame_text = tk.Frame(self.frame_log, bg='#0a0a1a')
         frame_text.pack(fill='both', expand=True)
         
         scrollbar = tk.Scrollbar(frame_text)
@@ -484,14 +487,14 @@ class IC705AppV4:
         scrollbar.config(command=self.text_log.yview)
         
         # Scrollbar horizontale
-        scrollbar_h = tk.Scrollbar(frame_log, orient='horizontal')
+        scrollbar_h = tk.Scrollbar(self.frame_log, orient='horizontal')
         scrollbar_h.pack(fill='x')
         self.text_log.config(xscrollcommand=scrollbar_h.set)
         scrollbar_h.config(command=self.text_log.xview)
         
         # Compteur de trames
         self.label_compteur = tk.Label(
-            frame_log,
+            self.frame_log,
             text="Total: 0 | Affichées: 0",
             font=("Helvetica", 10),
             fg='#888888',
@@ -515,6 +518,20 @@ class IC705AppV4:
         self.text_log.config(state='disabled')
         self.compteur_trames_total = 0
         self.label_compteur.config(text="Total: 0 | Affichées: 0")
+    
+    def masquer_panneau_log(self):
+        """Cache le panneau de log pour élargir le graphique (utilisé en lecture CSV)."""
+        if self.frame_log and self.log_visible:
+            self.frame_log.pack_forget()
+            self.log_visible = False
+            # S'assure que le graphe occupe tout l'espace disponible
+            self.frame_graph.pack_configure(side='left', fill='both', expand=True)
+    
+    def afficher_panneau_log(self):
+        """Réaffiche le panneau de log."""
+        if self.frame_log and not self.log_visible:
+            self.frame_log.pack(side='right', fill='y', padx=(10, 0))
+            self.log_visible = True
     
     def ajouter_trames_batch(self, trames):
         """Ajoute plusieurs trames au log en une seule opération."""
@@ -1154,6 +1171,7 @@ class IC705AppV4:
             
             self.mode_lecture_csv = True
             self.index_lecture = 0
+            self.masquer_panneau_log()
             
             self.label_status.config(text=f"📂 CSV: {len(self.donnees_csv)} lignes", fg='#00ccff')
             self.btn_ouvrir_csv.config(text="❌ Fermer CSV")
@@ -1172,6 +1190,7 @@ class IC705AppV4:
         """Ferme le mode lecture CSV."""
         self.mode_lecture_csv = False
         self.donnees_csv = None
+        self.afficher_panneau_log()
         
         if hasattr(self, 'frame_lecture'):
             self.frame_lecture.destroy()
