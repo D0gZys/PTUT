@@ -208,10 +208,13 @@ class IC705AppV4:
         # Options de log
         self.log_spectre = tk.BooleanVar(value=False)
         self.log_autres = tk.BooleanVar(value=True)
+        self.log_gains = tk.BooleanVar(value=False)
+        self.log_gains_flag = False
         self.log_actif = tk.BooleanVar(value=True)
         
         # Options d'affichage CSV
         self.affichage_db = tk.BooleanVar(value=False)
+        self.affichage_db_flag = False
         
         # Enregistrement CSV
         self.enregistrement_actif = False
@@ -219,9 +222,12 @@ class IC705AppV4:
         self.writer_csv = None
         self.nom_fichier_csv = None
         self.nb_lignes_csv = 0
+        self.rec_status_text = ""
+        self.rec_status_last = None
         
         # Trigger pour enregistrement
         self.trigger_actif = tk.BooleanVar(value=False)
+        self.trigger_actif_flag = False
         self.seuil_trigger = 70
         self.au_dessus_seuil = False
         self.nb_fichiers_trigger = 0
@@ -314,7 +320,8 @@ class IC705AppV4:
             font=('Helvetica', 10, 'bold'),
             bg='#1a1a2e',
             fg='white',
-            selectcolor='#2a2a4e'
+            selectcolor='#2a2a4e',
+            command=self.on_toggle_trigger
         )
         self.cb_trigger.pack(side='left')
         
@@ -322,6 +329,14 @@ class IC705AppV4:
                                      justify='center')
         self.entry_seuil.insert(0, "70")
         self.entry_seuil.pack(side='left', padx=2)
+        self.label_trigger_unit = tk.Label(
+            frame_trigger,
+            text="(lin)",
+            fg='white',
+            bg='#1a1a2e',
+            font=('Helvetica', 10)
+        )
+        self.label_trigger_unit.pack(side='left', padx=2)
         
         # Bouton ouvrir CSV
         self.btn_ouvrir_csv = tk.Button(
@@ -409,6 +424,19 @@ class IC705AppV4:
             font=('Helvetica', 11, 'bold')
         )
         self.label_gain.pack(side='left', padx=20)
+
+        # Bouton dB (mode direct et lecture CSV)
+        self.cb_db_global = tk.Checkbutton(
+            frame_sliders,
+            text="dB",
+            variable=self.affichage_db,
+            font=('Helvetica', 10, 'bold'),
+            bg='#1a1a2e',
+            fg='white',
+            selectcolor='#2a2a4e',
+            command=self.on_toggle_db
+        )
+        self.cb_db_global.pack(side='left', padx=10)
         
         # === Frame principale contenant graphique + log ===
         self.frame_principal = tk.Frame(self.root, bg='#1a1a2e')
@@ -451,7 +479,8 @@ class IC705AppV4:
             fg='#aaaaaa',
             bg='#1a1a2e',
             selectcolor='#2a2a4e',
-            font=('Helvetica', 9)
+            font=('Helvetica', 9),
+            command=self.on_toggle_log_options
         )
         cb_spectre.pack(side='left', padx=5)
         
@@ -462,9 +491,22 @@ class IC705AppV4:
             fg='#aaaaaa',
             bg='#1a1a2e',
             selectcolor='#2a2a4e',
-            font=('Helvetica', 9)
+            font=('Helvetica', 9),
+            command=self.on_toggle_log_options
         )
         cb_autres.pack(side='left', padx=5)
+
+        cb_gains = tk.Checkbutton(
+            frame_options,
+            text="Gain/Freq",
+            variable=self.log_gains,
+            fg='#aaaaaa',
+            bg='#1a1a2e',
+            selectcolor='#2a2a4e',
+            font=('Helvetica', 9),
+            command=self.on_toggle_log_options
+        )
+        cb_gains.pack(side='left', padx=5)
         
         self.btn_pause_log = tk.Button(
             frame_options,
@@ -527,6 +569,20 @@ class IC705AppV4:
         else:
             self.log_actif.set(True)
             self.btn_pause_log.config(text="⏸")
+
+    def on_toggle_log_options(self):
+        """Met à jour les drapeaux de log (appelé depuis les checkboxes)."""
+        try:
+            self.log_gains_flag = bool(self.log_gains.get())
+        except tk.TclError:
+            self.log_gains_flag = False
+
+    def on_toggle_trigger(self):
+        """Met à jour le drapeau trigger (thread-safe)."""
+        try:
+            self.trigger_actif_flag = bool(self.trigger_actif.get())
+        except tk.TclError:
+            self.trigger_actif_flag = False
     
     def clear_log(self):
         """Efface le log des trames."""
@@ -559,7 +615,9 @@ class IC705AppV4:
         for ts, type_t, hex_d in trames:
             if type_t == "SPECTRE" and not self.log_spectre.get():
                 continue
-            if type_t != "SPECTRE" and not self.log_autres.get():
+            if type_t == "GAIN" and not self.log_gains.get():
+                continue
+            if type_t not in ("SPECTRE", "GAIN") and not self.log_autres.get():
                 continue
             trames_filtrees.append((ts, type_t, hex_d))
         
@@ -589,7 +647,7 @@ class IC705AppV4:
     
     def on_slider_change(self, value):
         """Appelé quand un slider change."""
-        if self.mode_lecture_csv and self.affichage_db.get():
+        if self.affichage_db.get():
             self.db_min = float(self.slider_min.get())
             self.db_max = float(self.slider_max.get())
             
@@ -602,9 +660,7 @@ class IC705AppV4:
             if hasattr(self, 'ax_spectre'):
                 self.ax_spectre.set_ylim(self.db_min, self.db_max)
                 self.image_waterfall.set_clim(vmin=self.db_min, vmax=self.db_max)
-                self.canvas.draw()
-                if hasattr(self, 'use_blit') and self.use_blit:
-                    self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+                self.canvas.draw_idle()
             return
         
         self.gain_min = self.slider_min.get()
@@ -867,6 +923,15 @@ class IC705AppV4:
                     self.compteur_trames_total += 1
                     if len(self.trames_a_logger) < 100:
                         self.trames_a_logger.append((timestamp, type_trame, hex_data))
+                        # Log des gains/frequence (mode direct uniquement)
+                        if not self.mode_lecture_csv and self.log_gains_flag:
+                            if len(self.trames_a_logger) < 100:
+                                if self.affichage_db_flag:
+                                    gmin, gmax, unit = self.db_min, self.db_max, "dB"
+                                else:
+                                    gmin, gmax, unit = self.gain_min, self.gain_max, "lin"
+                                info_gain = f"f={self.freq_centrale:.3f} MHz | gmin={gmin:.1f} | gmax={gmax:.1f} ({unit})"
+                                self.trames_a_logger.append((timestamp, "GAIN", info_gain))
                 
                 # Traiter les réponses de fréquence (commande 0x03)
                 if len(msg) >= 11 and msg[4] == 0x03:
@@ -918,6 +983,15 @@ class IC705AppV4:
         
         if spectre is not None:
             self.rafraichir_graphique(spectre, waterfall)
+
+        # Mettre à jour le statut d'enregistrement (thread réception -> UI)
+        if self.enregistrement_actif and hasattr(self, 'label_rec'):
+            if self.rec_status_text != self.rec_status_last:
+                try:
+                    self.label_rec.config(text=self.rec_status_text)
+                except tk.TclError:
+                    pass
+                self.rec_status_last = self.rec_status_text
         
         # Planifier la prochaine mise à jour (40ms = 25 FPS)
         self.root.after(40, self.boucle_affichage)
@@ -929,7 +1003,7 @@ class IC705AppV4:
         Quand force_full=True, on force un draw complet (utile hors mode temps réel)
         pour que la ligne du spectre soit bien visible même en mode lecture CSV.
         """
-        if self.mode_lecture_csv and self.affichage_db.get():
+        if self.affichage_db.get():
             if spectre is not None:
                 spectre = self.convertir_spectre_db(spectre)
             if waterfall is not None:
@@ -1095,7 +1169,7 @@ class IC705AppV4:
         return ts
 
     def configurer_sliders_db(self, actif):
-        """Ajuste les sliders gain pour l'affichage dB en lecture CSV."""
+        """Ajuste les sliders gain pour l'affichage dB (CSV ou temps réel)."""
         if not hasattr(self, 'slider_min') or not hasattr(self, 'slider_max'):
             return
         
@@ -1118,6 +1192,10 @@ class IC705AppV4:
         valeurs = np.asarray(spectre, dtype=np.float32)
         valeurs = np.maximum(valeurs, 1e-3)
         return 20.0 * np.log10(valeurs)
+
+    def unite_trigger(self):
+        """Retourne l'unité affichée pour le trigger (dB ou lin)."""
+        return "dB" if self.affichage_db_flag else "lin"
     
     def boucle_log(self):
         """Met à jour le log des trames."""
@@ -1148,7 +1226,9 @@ class IC705AppV4:
                 self.nb_fichiers_trigger = 0
                 self.enregistrement_actif = True
                 self.btn_enregistrer.config(text="⏹ STOP")
-                self.label_rec.config(text=f"⏺ TRIGGER: attente signal > {self.seuil_trigger}")
+                self.rec_status_text = f"⏺ TRIGGER: attente signal > {self.seuil_trigger} {self.unite_trigger()}"
+                self.rec_status_last = None
+                self.label_rec.config(text=self.rec_status_text)
                 self.cb_trigger.config(state='disabled')
                 self.entry_seuil.config(state='disabled')
             else:
@@ -1178,7 +1258,9 @@ class IC705AppV4:
             self.nb_lignes_csv = 0
             
             self.btn_enregistrer.config(text="⏹ STOP")
-            self.label_rec.config(text=f"⏺ REC: {os.path.basename(self.nom_fichier_csv)}")
+            self.rec_status_text = f"⏺ REC: {os.path.basename(self.nom_fichier_csv)}"
+            self.rec_status_last = None
+            self.label_rec.config(text=self.rec_status_text)
             
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de créer le fichier CSV:\n{e}")
@@ -1196,6 +1278,8 @@ class IC705AppV4:
         self.enregistrement_actif = False
         self.au_dessus_seuil = False
         self.btn_enregistrer.config(text="⏺ REC")
+        self.rec_status_text = ""
+        self.rec_status_last = None
         
         self.cb_trigger.config(state='normal')
         self.entry_seuil.config(state='normal')
@@ -1214,21 +1298,30 @@ class IC705AppV4:
         if not self.enregistrement_actif:
             return
         
-        if self.trigger_actif.get():
-            max_signal = np.max(spectre)
-            
-            if max_signal >= self.seuil_trigger:
+        # Valeur de référence pour le trigger : brute ou dB (affichage uniquement)
+        if self.affichage_db_flag:
+            spectre_affichage = self.convertir_spectre_db(spectre)
+            max_signal = float(np.max(spectre_affichage))
+            seuil = self.seuil_trigger
+        else:
+            spectre_affichage = spectre
+            max_signal = float(np.max(spectre_affichage))
+            seuil = self.seuil_trigger
+        
+        if self.trigger_actif_flag:
+            if max_signal >= seuil:
                 if not self.au_dessus_seuil:
                     self.au_dessus_seuil = True
                     self.creer_nouveau_csv_trigger()
                 
                 if self.writer_csv:
+                    # On écrit toujours les valeurs brutes dans le CSV
                     self.ecrire_ligne_csv(spectre)
             else:
                 if self.au_dessus_seuil:
                     self.au_dessus_seuil = False
                     self.fermer_csv_trigger()
-                    self.label_rec.config(text=f"⏺ TRIGGER: attente signal > {self.seuil_trigger}")
+                    self.rec_status_text = f"⏺ TRIGGER: attente signal > {seuil} {self.unite_trigger()}"
         else:
             if self.writer_csv:
                 self.ecrire_ligne_csv(spectre)
@@ -1257,7 +1350,7 @@ class IC705AppV4:
             self.writer_csv.writerow(header)
             
             self.nb_lignes_csv = 0
-            self.label_rec.config(text=f"⏺ TRIGGER #{self.nb_fichiers_trigger}: enregistrement...")
+            self.rec_status_text = f"⏺ TRIGGER #{self.nb_fichiers_trigger}: enregistrement..."
             
         except Exception as e:
             print(f"Erreur création CSV trigger: {e}")
@@ -1290,10 +1383,10 @@ class IC705AppV4:
             
             if self.nb_lignes_csv % 100 == 0:
                 self.fichier_csv.flush()
-                if self.trigger_actif.get():
-                    self.label_rec.config(text=f"⏺ TRIGGER #{self.nb_fichiers_trigger}: {self.nb_lignes_csv} lignes")
+                if self.trigger_actif_flag:
+                    self.rec_status_text = f"⏺ TRIGGER #{self.nb_fichiers_trigger}: {self.nb_lignes_csv} lignes"
                 else:
-                    self.label_rec.config(text=f"⏺ REC: {self.nb_lignes_csv} lignes")
+                    self.rec_status_text = f"⏺ REC: {self.nb_lignes_csv} lignes"
                 
         except Exception as e:
             print(f"Erreur écriture CSV: {e}")
@@ -1395,6 +1488,9 @@ class IC705AppV4:
         self.afficher_panneau_log()
         self.configurer_affichage_csv(False)
         self.affichage_db.set(False)
+        self.affichage_db_flag = False
+        if hasattr(self, 'label_trigger_unit'):
+            self.label_trigger_unit.config(text=f"({self.unite_trigger()})")
         if hasattr(self, 'image_waterfall'):
             self.image_waterfall.set_cmap(WF_CMAP_LINEAR)
             self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
@@ -1577,10 +1673,14 @@ class IC705AppV4:
         self.appliquer_zoom_waterfall()
     
     def on_toggle_db(self):
-        """Bascule l'affichage en dB (lecture CSV)."""
-        if not self.mode_lecture_csv:
-            return
-        if self.affichage_db.get():
+        """Bascule l'affichage en dB (lecture CSV ou temps réel)."""
+        try:
+            actif = bool(self.affichage_db.get())
+        except tk.TclError:
+            actif = False
+        self.affichage_db_flag = actif
+
+        if actif:
             self.ax_spectre.set_ylabel("Amplitude (dB)")
             self.ax_spectre.set_ylim(DB_MIN, DB_MAX)
             self.image_waterfall.set_clim(vmin=DB_MIN, vmax=DB_MAX)
@@ -1592,7 +1692,11 @@ class IC705AppV4:
             self.image_waterfall.set_clim(vmin=self.gain_min, vmax=self.gain_max)
             self.image_waterfall.set_cmap(WF_CMAP_LINEAR)
             self.configurer_sliders_db(False)
-        self.charger_donnees_csv(force_rebuild=True)
+        # Mettre à jour le label unité du trigger
+        if hasattr(self, 'label_trigger_unit'):
+            self.label_trigger_unit.config(text=f"({self.unite_trigger()})")
+        # Rafraîchir avec les données courantes (sans toucher aux buffers bruts)
+        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
     
     def aller_a_position(self, index, force_rebuild=True):
         """Va à une position spécifique dans le CSV."""
@@ -1712,10 +1816,17 @@ class IC705AppV4:
             self.charger_donnees_csv(force_rebuild=False)
             self.mettre_slider_position(self.index_lecture)
             
-            vitesse = self.slider_vitesse.get()
-            delai = max(4, 200 // vitesse)
+            try:
+                vitesse = self.slider_vitesse.get()
+            except Exception:
+                vitesse = 10
+            # Pour limiter la charge CPU/Tk sur macOS, délai min 40ms (~25 FPS)
+            delai = max(40, 200 // max(1, int(vitesse)))
             
-            self.root.after(delai, self.lecture_auto)
+            try:
+                self.after_lecture_id = self.root.after(delai, self.lecture_auto)
+            except tk.TclError:
+                self.after_lecture_id = None
         else:
             self.arreter_lecture()
     
