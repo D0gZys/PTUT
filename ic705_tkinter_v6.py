@@ -198,6 +198,7 @@ class IC705AppV4:
         # Paramètres de niveau dBm (données brutes IC-705)
         self.dbm_min = DBM_MIN
         self.dbm_max = DBM_MAX
+        self.offset_calibration = 0  # Offset de calibration en dB
         
         # Statistiques cumulatives depuis le démarrage
         self.stat_global_min = None  # Min absolu depuis démarrage
@@ -442,6 +443,34 @@ class IC705AppV4:
             command=self.on_toggle_conversion_log
         )
         self.cb_conversion_log.pack(side='left', padx=10)
+        
+        # Slider de calibration (offset)
+        tk.Label(frame_sliders, text="📏 Calibration:", fg='#ff9900', bg='#1a1a2e',
+                 font=('Helvetica', 10, 'bold')).pack(side='left', padx=(15, 2))
+        self.slider_calibration = tk.Scale(
+            frame_sliders,
+            from_=-50, to=50,
+            orient='horizontal',
+            length=120,
+            bg='#2a2a4e',
+            fg='white',
+            troughcolor='#1a1a3e',
+            highlightthickness=0,
+            font=('Helvetica', 9),
+            command=self.on_calibration_change
+        )
+        self.slider_calibration.set(0)
+        self.slider_calibration.pack(side='left', padx=2)
+        
+        self.label_calibration = tk.Label(
+            frame_sliders,
+            text="0 dB",
+            fg='#ff9900',
+            bg='#1a1a2e',
+            font=('Consolas', 10, 'bold'),
+            width=6
+        )
+        self.label_calibration.pack(side='left', padx=2)
         
         # === Frame pour les statistiques en temps réel ===
         frame_stats = tk.Frame(self.root, bg='#1a1a2e')
@@ -723,6 +752,18 @@ class IC705AppV4:
             # Recréer le background après modification
             if hasattr(self, 'use_blit') and self.use_blit:
                 self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+    
+    def on_calibration_change(self, value):
+        """Appelé quand le slider de calibration change."""
+        self.offset_calibration = int(value)
+        
+        # Mise à jour du label
+        sign = "+" if self.offset_calibration >= 0 else ""
+        self.label_calibration.config(text=f"{sign}{self.offset_calibration} dB")
+        
+        # Rafraîchir l'affichage si données disponibles
+        if hasattr(self, 'spectre_actuel') and hasattr(self, 'waterfall_data'):
+            self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
     
     def creer_graphique(self):
         """Crée le graphique matplotlib - IDENTIQUE à ic705_simple.py."""
@@ -1110,6 +1151,13 @@ class IC705AppV4:
                 spectre = self.convertir_spectre_log(spectre)
             if waterfall is not None:
                 waterfall = self.convertir_spectre_log(waterfall)
+        
+        # Application de l'offset de calibration
+        if self.offset_calibration != 0:
+            if spectre is not None:
+                spectre = spectre + self.offset_calibration
+            if waterfall is not None:
+                waterfall = waterfall + self.offset_calibration
         
         if spectre is not None:
             self.ligne_spectre.set_data(self.axe_freq, spectre)
