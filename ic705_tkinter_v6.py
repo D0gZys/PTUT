@@ -99,9 +99,31 @@ def trouver_messages_civ(buffer):
 
 
 def extraire_donnees_spectre(msg):
-    """Extrait les amplitudes d'une trame spectre (commande 0x27)."""
+    """
+    Extrait les amplitudes d'une trame spectre (commande 0x27).
+    
+    Structure de la trame:
+    [0-1]   FE FE       : Préambule
+    [2]     E0          : Adresse destination (PC)
+    [3]     A4          : Adresse source (IC-705)
+    [4]     27          : Commande (spectre)
+    [5-9]   5 octets    : Fréquence centrale BCD
+    [10-11] 2 octets    : Information span/step
+    [12]    1 octet     : Scope ON/OFF
+    [13]    1 octet     : Division de trame (bits 7-4: nb divisions-1, bits 3-0: segment actuel)
+    [14-18] 5 octets    : Autres métadonnées
+    [19+]   Données     : Amplitudes spectrales (jusqu'à FD-1)
+    [-1]    FD          : Terminateur
+    
+    Retourne: tuple (segment_num, nb_segments, amplitudes) ou None
+    """
     if len(msg) < 20:
         return None
+    
+    # Extraire les informations de segmentation (octet 13)
+    division_byte = msg[13]
+    nb_segments = ((division_byte >> 4) & 0x0F) + 1
+    segment_num = (division_byte & 0x0F)  # 0-indexé
     
     idx_start = 19
     idx_end = len(msg) - 1
@@ -109,7 +131,9 @@ def extraire_donnees_spectre(msg):
     if idx_start >= idx_end:
         return None
     
-    return np.array(list(msg[idx_start:idx_end]), dtype=np.float32)
+    amplitudes = np.array(list(msg[idx_start:idx_end]), dtype=np.float32)
+    
+    return (segment_num, nb_segments, amplitudes)
 
 
 def redimensionner_spectre(donnees, largeur_cible):
@@ -194,6 +218,11 @@ class IC705AppV4:
         self.interval_maj_temps = 0.2
         self.waterfall_extent = None
         self.use_blit_avant_csv = None
+        
+        # Gestion des segments spectre (l'IC-705 envoie le spectre en plusieurs segments)
+        self.segments_spectre = {}  # Dictionnaire {segment_num: amplitudes}
+        self.nb_segments_attendus = 0
+        self.segments_recus = set()
         
         # Paramètres de niveau dBm (données brutes IC-705)
         self.dbm_min = DBM_MIN
@@ -1025,19 +1054,45 @@ class IC705AppV4:
                 
                 # Traiter les données spectre (commande 0x27)
                 if len(msg) >= 5 and msg[4] == 0x27 and len(msg) > 50:
-                    amplitudes = extraire_donnees_spectre(msg)
-                    if amplitudes is not None:
-                        spectre = redimensionner_spectre(amplitudes, LARGEUR_SPECTRE)
+                    result = extraire_donnees_spectre(msg)
+                    if result is not None:
+                        segment_num, nb_segments, amplitudes = result
                         
-                        with self.lock_donnees:
-                            self.spectre_actuel = spectre.copy()
-                            self.waterfall_data[1:] = self.waterfall_data[:-1]
-                            self.waterfall_data[0] = spectre.copy()
-                            self.nouvelles_donnees = True
+                        # Si le nombre de segments change, réinitialiser
+                        if nb_segments != self.nb_segments_attendus:
+                            self.segments_spectre.clear()
+                            self.segments_recus.clear()
+                            self.nb_segments_attendus = nb_segments
                         
-                        # Enregistrer dans le CSV si actif
-                        if self.enregistrement_actif:
-                            self.enregistrer_spectre(spectre)
+                        # Stocker ce segment
+                        self.segments_spectre[segment_num] = amplitudes
+                        self.segments_recus.add(segment_num)
+                        
+                        # Vérifier si tous les segments sont reçus
+                        if len(self.segments_recus) >= self.nb_segments_attendus:
+                            # Assembler le spectre complet dans l'ordre des segments
+                            spectre_complet = []
+                            for i in range(self.nb_segments_attendus):
+                                if i in self.segments_spectre:
+                                    spectre_complet.extend(self.segments_spectre[i])
+                            
+                            if len(spectre_complet) > 0:
+                                spectre_array = np.array(spectre_complet, dtype=np.float32)
+                                spectre = redimensionner_spectre(spectre_array, LARGEUR_SPECTRE)
+                                
+                                with self.lock_donnees:
+                                    self.spectre_actuel = spectre.copy()
+                                    self.waterfall_data[1:] = self.waterfall_data[:-1]
+                                    self.waterfall_data[0] = spectre.copy()
+                                    self.nouvelles_donnees = True
+                                
+                                # Enregistrer dans le CSV si actif
+                                if self.enregistrement_actif:
+                                    self.enregistrer_spectre(spectre)
+                            
+                            # Réinitialiser pour le prochain cycle
+                            self.segments_spectre.clear()
+                            self.segments_recus.clear()
             
             if len(buffer) > 10000:
                 buffer.clear()
