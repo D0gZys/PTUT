@@ -273,6 +273,11 @@ class IC705AppV4:
         self.index_lecture = 0
         self.lecture_en_cours = False
         
+        # Annotations souris sur waterfall (mode CSV)
+        self.annotation_survol = None
+        self.annotation_clic = None
+        self.clic_markers = []  # Liste pour stocker les marqueurs de clic
+        
         # Créer l'interface
         self.creer_interface()
         self.creer_graphique()
@@ -881,6 +886,10 @@ class IC705AppV4:
         # Sauvegarder le background pour le blitting (optimisation)
         self.background = self.canvas.copy_from_bbox(self.fig.bbox)
         self.use_blit = True
+        
+        # Connecter les événements souris pour le waterfall (mode CSV)
+        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move_waterfall)
+        self.canvas.mpl_connect('button_press_event', self.on_mouse_click_waterfall)
     
     def mettre_a_jour_axe_freq(self):
         """Met à jour l'axe des fréquences quand la fréquence centrale change."""
@@ -903,6 +912,161 @@ class IC705AppV4:
         # Recréer le background après modification
         if hasattr(self, 'use_blit') and self.use_blit:
             self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+    
+    def on_mouse_move_waterfall(self, event):
+        """Gère le survol de la souris sur le waterfall (mode CSV uniquement)."""
+        # Seulement actif en mode lecture CSV
+        if not self.mode_lecture_csv or not self.donnees_csv:
+            return
+        
+        # Vérifier que la souris est dans l'axe du waterfall
+        if event.inaxes != self.ax_waterfall:
+            # Supprimer l'annotation de survol si on sort du waterfall
+            if self.annotation_survol is not None:
+                self.annotation_survol.remove()
+                self.annotation_survol = None
+                self.canvas.draw_idle()
+            return
+        
+        # Récupérer les coordonnées
+        x_freq = event.xdata
+        y_ligne = event.ydata
+        
+        if x_freq is None or y_ligne is None:
+            return
+        
+        # Obtenir les données du waterfall
+        wf_data = self.image_waterfall.get_array()
+        nb_lignes, nb_points = wf_data.shape
+        
+        # Convertir la position en indices
+        extent = self.image_waterfall.get_extent()
+        freq_min, freq_max = extent[0], extent[1]
+        
+        # Calculer l'index de fréquence
+        idx_freq = int((x_freq - freq_min) / (freq_max - freq_min) * nb_points)
+        idx_freq = max(0, min(idx_freq, nb_points - 1))
+        
+        # Calculer l'index de ligne
+        idx_ligne = int(y_ligne)
+        idx_ligne = max(0, min(idx_ligne, nb_lignes - 1))
+        
+        # Récupérer la valeur de gain
+        gain = wf_data[idx_ligne, idx_freq]
+        
+        # Déterminer l'unité
+        unite = "dB (log)" if self.conversion_log_flag else "dBm"
+        
+        # Mettre à jour ou créer l'annotation de survol
+        texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz"
+        
+        if self.annotation_survol is None:
+            self.annotation_survol = self.ax_waterfall.annotate(
+                texte,
+                xy=(x_freq, y_ligne),
+                xytext=(10, 10),
+                textcoords='offset points',
+                fontsize=9,
+                color='white',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#333366', alpha=0.9, edgecolor='#00ccff'),
+                zorder=100
+            )
+        else:
+            self.annotation_survol.set_text(texte)
+            self.annotation_survol.xy = (x_freq, y_ligne)
+        
+        self.canvas.draw_idle()
+    
+    def on_mouse_click_waterfall(self, event):
+        """Gère le clic sur le waterfall (mode CSV) pour afficher gain et temps."""
+        # Seulement actif en mode lecture CSV
+        if not self.mode_lecture_csv or not self.donnees_csv:
+            return
+        
+        # Vérifier que le clic est dans l'axe du waterfall
+        if event.inaxes != self.ax_waterfall:
+            return
+        
+        # Clic droit = effacer tous les marqueurs
+        if event.button == 3:
+            self.effacer_marqueurs_clic()
+            return
+        
+        # Clic gauche uniquement
+        if event.button != 1:
+            return
+        
+        # Récupérer les coordonnées
+        x_freq = event.xdata
+        y_ligne = event.ydata
+        
+        if x_freq is None or y_ligne is None:
+            return
+        
+        # Obtenir les données du waterfall
+        wf_data = self.image_waterfall.get_array()
+        nb_lignes, nb_points = wf_data.shape
+        
+        # Convertir la position en indices
+        extent = self.image_waterfall.get_extent()
+        freq_min, freq_max = extent[0], extent[1]
+        
+        idx_freq = int((x_freq - freq_min) / (freq_max - freq_min) * nb_points)
+        idx_freq = max(0, min(idx_freq, nb_points - 1))
+        
+        idx_ligne = int(y_ligne)
+        idx_ligne = max(0, min(idx_ligne, nb_lignes - 1))
+        
+        # Récupérer la valeur de gain
+        gain = wf_data[idx_ligne, idx_freq]
+        
+        # Récupérer le timestamp associé à cette ligne
+        timestamp_label = ""
+        if hasattr(self, 'waterfall_time_labels') and idx_ligne < len(self.waterfall_time_labels):
+            timestamp_label = self.waterfall_time_labels[idx_ligne]
+        
+        # Déterminer l'unité
+        unite = "dB (log)" if self.conversion_log_flag else "dBm"
+        
+        # Créer le texte de l'annotation (sans emojis pour compatibilité police)
+        texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz\nT: {timestamp_label}"
+        
+        # Créer un marqueur et une annotation permanente
+        marker, = self.ax_waterfall.plot(x_freq, y_ligne, 'o', color='#00ff00', markersize=8, zorder=99)
+        
+        annotation = self.ax_waterfall.annotate(
+            texte,
+            xy=(x_freq, y_ligne),
+            xytext=(15, -15),
+            textcoords='offset points',
+            fontsize=9,
+            color='white',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='#1a4a1a', alpha=0.95, edgecolor='#00ff00'),
+            arrowprops=dict(arrowstyle='->', color='#00ff00', lw=1.5),
+            zorder=100
+        )
+        
+        # Stocker pour pouvoir effacer plus tard
+        self.clic_markers.append((marker, annotation))
+        
+        self.canvas.draw_idle()
+        
+        # Afficher aussi dans la console
+        print(f"[Clic WF] {gain:.1f} {unite} @ {x_freq:.4f} MHz | {timestamp_label}")
+    
+    def effacer_marqueurs_clic(self):
+        """Efface tous les marqueurs de clic sur le waterfall."""
+        for marker, annotation in self.clic_markers:
+            marker.remove()
+            annotation.remove()
+        self.clic_markers.clear()
+        
+        if self.annotation_clic is not None:
+            self.annotation_clic.remove()
+            self.annotation_clic = None
+        
+        self.canvas.draw_idle()
+        print("[WF] Marqueurs effacés")
     
     def toggle_connexion(self):
         """Connecte ou déconnecte du serveur."""
@@ -1712,6 +1876,13 @@ class IC705AppV4:
         self.configurer_affichage_csv(False)
         self.conversion_log.set(False)
         self.conversion_log_flag = False
+        
+        # Effacer les marqueurs de clic sur le waterfall
+        self.effacer_marqueurs_clic()
+        if self.annotation_survol is not None:
+            self.annotation_survol.remove()
+            self.annotation_survol = None
+        
         if hasattr(self, 'label_trigger_unit'):
             self.label_trigger_unit.config(text="(dBm)")
         if hasattr(self, 'image_waterfall'):
