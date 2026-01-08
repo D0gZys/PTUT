@@ -777,6 +777,13 @@ class IC705AppV4:
         if hasattr(self, 'ax_spectre'):
             self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
             self.image_waterfall.set_clim(vmin=self.dbm_min, vmax=self.dbm_max)
+            
+            # Mettre à jour les ticks de la colorbar pour refléter la nouvelle plage
+            if hasattr(self, 'colorbar'):
+                # La colorbar se met à jour automatiquement via set_clim
+                # mais on force le rafraîchissement des graduations
+                self.colorbar.update_normal(self.image_waterfall)
+            
             self.canvas.draw()
             # Recréer le background après modification
             if hasattr(self, 'use_blit') and self.use_blit:
@@ -803,10 +810,13 @@ class IC705AppV4:
         freq_max = self.freq_centrale + demi_span
         self.axe_freq = np.linspace(freq_min, freq_max, LARGEUR_SPECTRE)
         
-        # Créer la figure avec 2 sous-graphiques
-        self.fig, (self.ax_spectre, self.ax_waterfall) = plt.subplots(
-            2, 1, figsize=(9, 6), facecolor='#1a1a2e'
-        )
+        # Créer la figure avec GridSpec pour avoir la colorbar à droite du waterfall
+        self.fig = plt.figure(figsize=(9.5, 6), facecolor='#1a1a2e')
+        gs = self.fig.add_gridspec(2, 2, width_ratios=[30, 1], hspace=0.3, wspace=0.05)
+        
+        self.ax_spectre = self.fig.add_subplot(gs[0, 0])
+        self.ax_waterfall = self.fig.add_subplot(gs[1, 0])
+        self.ax_colorbar = self.fig.add_subplot(gs[1, 1])
         
         # Style sombre
         self.ax_spectre.set_facecolor('#0a0a1a')
@@ -849,6 +859,17 @@ class IC705AppV4:
             extent=[freq_min, freq_max, PROFONDEUR_WATERFALL, 0]
         )
         self.ax_waterfall.set_ylim(self.image_waterfall.get_extent()[2], 0)
+        
+        # === Créer la colorbar (jauge de couleurs) ===
+        self.colorbar = self.fig.colorbar(
+            self.image_waterfall, 
+            cax=self.ax_colorbar,
+            orientation='vertical'
+        )
+        self.colorbar.set_label('Niveau (dBm)', color='white', fontsize=10)
+        self.ax_colorbar.tick_params(colors='white', labelsize=9)
+        self.ax_colorbar.yaxis.set_ticks_position('right')
+        self.ax_colorbar.yaxis.set_label_position('right')
         
         self.fig.tight_layout()
         
