@@ -61,6 +61,10 @@ BUFFER_MAX_SEC = 30.0
 UI_SCALE = 1.25
 FONT_SCALE = 1.35
 WINDOW_START_RATIO = 0.9
+BASE_WINDOW_WIDTH = 1400
+BASE_WINDOW_HEIGHT = 800
+MIN_FONT_SCALE = 1.0
+MAX_FONT_SCALE = 2.0
 ENABLE_LOG_PANEL = False
 MAX_TRAMES_QUEUE = 100
 CIV_PREAMBLE = bytes([0xFE, 0xFE])
@@ -328,7 +332,11 @@ class IC705AppV7:
         self.csv_ticks_every = 5
         self.csv_slider_every = 2
 
-        self.font_cache = {}
+        self.widget_fonts = {}
+        self.widget_base_sizes = {}
+        self.widget_base_lengths = {}
+        self.font_scale_current = FONT_SCALE
+        self.pending_resize_id = None
 
         # Buffer binaire pour affichage decale
         self.use_buffer_bin = True
@@ -346,6 +354,8 @@ class IC705AppV7:
         # Créer l'interface
         self.creer_interface()
         self.appliquer_scale_police()
+        self.root.bind("<Configure>", self.on_window_resize)
+        self.root.after(200, self._apply_resize_scale)
         self.creer_graphique()
         
         # Gestion de la fermeture
@@ -373,25 +383,42 @@ class IC705AppV7:
         except tk.TclError:
             pass
 
-    def _get_scaled_font(self, font_spec):
-        """Retourne une police mise a l'echelle avec cache."""
-        cached = self.font_cache.get(font_spec)
-        if cached is not None:
-            return cached
+    def _calc_window_scale(self):
+        """Calcule le facteur de scale selon la taille de la fenetre."""
         try:
-            font_obj = tkfont.Font(root=self.root, font=font_spec)
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
         except tk.TclError:
-            return font_spec
-        size = font_obj.cget('size')
-        if size == 0:
-            return font_obj
-        if size > 0:
-            new_size = max(1, int(round(size * FONT_SCALE)))
-        else:
-            new_size = -max(1, int(round(abs(size) * FONT_SCALE)))
-        font_obj.configure(size=new_size)
-        self.font_cache[font_spec] = font_obj
-        return font_obj
+            return FONT_SCALE
+        if width <= 1 or height <= 1:
+            width = int(self.root.winfo_screenwidth() * WINDOW_START_RATIO)
+            height = int(self.root.winfo_screenheight() * WINDOW_START_RATIO)
+        scale = min(width / BASE_WINDOW_WIDTH, height / BASE_WINDOW_HEIGHT)
+        scale = max(MIN_FONT_SCALE, min(MAX_FONT_SCALE, scale))
+        return scale * FONT_SCALE
+
+    def on_window_resize(self, event):
+        """Planifie une mise a jour du scale lors du resize."""
+        if event.widget != self.root:
+            return
+        if self.pending_resize_id is not None:
+            try:
+                self.root.after_cancel(self.pending_resize_id)
+            except tk.TclError:
+                pass
+        try:
+            self.pending_resize_id = self.root.after(150, self._apply_resize_scale)
+        except tk.TclError:
+            self.pending_resize_id = None
+
+    def _apply_resize_scale(self):
+        """Applique le scale calcule aux widgets."""
+        self.pending_resize_id = None
+        new_scale = self._calc_window_scale()
+        if abs(new_scale - self.font_scale_current) < 0.05:
+            return
+        self.font_scale_current = new_scale
+        self.appliquer_scale_police()
 
     def _scale_widget(self, widget):
         """Applique le scaling de police a un widget."""
@@ -399,22 +426,52 @@ class IC705AppV7:
             font_spec = widget.cget('font')
         except tk.TclError:
             font_spec = None
+
         if font_spec:
-            try:
-                widget.configure(font=self._get_scaled_font(font_spec))
-            except tk.TclError:
-                pass
+            font_obj = self.widget_fonts.get(widget)
+            if font_obj is None:
+                try:
+                    font_obj = tkfont.Font(root=self.root, font=font_spec)
+                except tk.TclError:
+                    font_obj = None
+                if font_obj is not None:
+                    base_size = font_obj.cget('size')
+                    self.widget_base_sizes[widget] = base_size
+                    self.widget_fonts[widget] = font_obj
+                    try:
+                        widget.configure(font=font_obj)
+                    except tk.TclError:
+                        pass
+            else:
+                base_size = self.widget_base_sizes.get(widget, font_obj.cget('size'))
+
+            if font_obj is not None:
+                if base_size == 0:
+                    return
+                if base_size > 0:
+                    new_size = max(1, int(round(base_size * self.font_scale_current)))
+                else:
+                    new_size = -max(1, int(round(abs(base_size) * self.font_scale_current)))
+                try:
+                    font_obj.configure(size=new_size)
+                except tk.TclError:
+                    pass
+
         if isinstance(widget, tk.Scale):
-            try:
-                length = int(float(widget.cget('length')))
-                widget.configure(length=int(length * FONT_SCALE))
-            except tk.TclError:
-                pass
+            if widget not in self.widget_base_lengths:
+                try:
+                    self.widget_base_lengths[widget] = int(float(widget.cget('length')))
+                except tk.TclError:
+                    self.widget_base_lengths[widget] = None
+            base_len = self.widget_base_lengths.get(widget)
+            if base_len:
+                try:
+                    widget.configure(length=int(base_len * self.font_scale_current))
+                except tk.TclError:
+                    pass
 
     def appliquer_scale_police(self, widget=None):
         """Applique le scaling des polices a tous les widgets."""
-        if FONT_SCALE == 1.0:
-            return
         if widget is None:
             widget = self.root
         self._scale_widget(widget)
