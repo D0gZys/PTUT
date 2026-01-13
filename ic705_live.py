@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IC-705 Spectrum Display avec Tkinter - Version 7
-================================================
-Version avec affichage dBm natif (données brutes du IC-705).
+IC-705 Live v7
+==============
+Affichage en temps reel et enregistrement CSV.
 
-Fonctionnalités:
-- Affichage du spectre et waterfall en temps réel en dBm
-- Les données brutes du IC-705 sont interprétées comme des niveaux dBm
- - Panneau de log des trames CI-V en hexadécimal (optionnel)
-- Sliders de niveau min/max en dBm
-- Enregistrement CSV
-- Mode Trigger pour l'enregistrement
-- Lecture de fichiers CSV
+Fonctions:
+- Spectre + waterfall en dBm
+- Enregistrement CSV + trigger
 """
 
 import tkinter as tk
-from tkinter import messagebox, ttk, filedialog, simpledialog
+from tkinter import messagebox
 import tkinter.font as tkfont
 from collections import deque
 import socket
@@ -236,7 +231,7 @@ class IC705AppV7:
     def __init__(self, root):
         """Initialise l'application."""
         self.root = root
-        self.root.title("IC-705 Spectrum Display v7 - dBm")
+        self.root.title("IC-705 Live v7 - dBm")
         self.root.geometry("1400x800")
         self.root.configure(bg='#1a1a2e')
         self.root.minsize(1200, 600)
@@ -254,16 +249,9 @@ class IC705AppV7:
         # Données du spectre et waterfall
         self.spectre_actuel = np.zeros(LARGEUR_SPECTRE)
         self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
-        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
-        self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
         self.nouvelles_donnees = False
         self.lock_donnees = threading.Lock()
-        self.derniere_ligne_rejouee = None
-        self.slider_update_en_cours = False
-        self.derniere_maj_temps = 0.0
-        self.interval_maj_temps = 0.2
         self.waterfall_extent = None
-        self.use_blit_avant_csv = None
         
         # Gestion des segments spectre (l'IC-705 envoie le spectre en plusieurs segments)
         self.segments_spectre = []
@@ -324,17 +312,6 @@ class IC705AppV7:
         self.trigger_pre_buffer = deque(maxlen=TRIGGER_PRE_LINES)
         self.post_trigger_restantes = 0
         
-        # Mode lecture CSV
-        self.mode_lecture_csv = False
-        self.donnees_csv = None
-        self.csv_filter_info = None
-        self.index_lecture = 0
-        self.lecture_en_cours = False
-        self.csv_frame_count = 0
-        self.csv_render_every = 2
-        self.csv_stats_every = 4
-        self.csv_ticks_every = 5
-        self.csv_slider_every = 2
 
         self.widget_fonts = {}
         self.widget_base_sizes = {}
@@ -350,10 +327,6 @@ class IC705AppV7:
         self.lock_buffer = threading.Lock()
         self.buffer_dropped = 0
         
-        # Annotations souris sur waterfall (mode CSV)
-        self.annotation_survol = None
-        self.annotation_clic = None
-        self.clic_markers = []  # Liste pour stocker les marqueurs de clic
         
         # Créer l'interface
         self.creer_interface()
@@ -493,7 +466,7 @@ class IC705AppV7:
         # Titre
         titre = tk.Label(
             frame_controles,
-            text="📡 IC-705 Spectrum Display v7 - dBm",
+            text="IC-705 Live v7 - dBm",
             font=("Helvetica", 18, "bold"),
             fg='#00ff88',
             bg='#1a1a2e'
@@ -576,16 +549,6 @@ class IC705AppV7:
         )
         self.label_trigger_unit.pack(side='left', padx=2)
         
-        # Bouton ouvrir CSV
-        self.btn_ouvrir_csv = tk.Button(
-            frame_controles,
-            text="📂 Open CSV",
-            font=("Helvetica", 12, "bold"),
-            width=12,
-            command=self.ouvrir_csv
-        )
-        self.btn_ouvrir_csv.pack(side='left', padx=10)
-        
         # Status
         self.label_status = tk.Label(
             frame_controles,
@@ -615,7 +578,6 @@ class IC705AppV7:
             bg='#1a1a2e'
         )
         self.label_rec.pack(side='right', padx=5)
-        
         # === Frame pour les sliders de niveau dBm ===
         frame_sliders = tk.Frame(self.root, bg='#1a1a2e')
         frame_sliders.pack(fill='x', padx=10, pady=5)
@@ -1099,9 +1061,6 @@ class IC705AppV7:
         self.background = self.canvas.copy_from_bbox(self.fig.bbox)
         self.use_blit = True
         
-        # Connecter les événements souris pour le waterfall (mode CSV)
-        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move_waterfall)
-        self.canvas.mpl_connect('button_press_event', self.on_mouse_click_waterfall)
     
     def mettre_a_jour_axe_freq(self):
         """Met à jour l'axe des fréquences quand la fréquence centrale change."""
@@ -1124,161 +1083,6 @@ class IC705AppV7:
         # Recréer le background après modification
         if hasattr(self, 'use_blit') and self.use_blit:
             self.background = self.canvas.copy_from_bbox(self.fig.bbox)
-    
-    def on_mouse_move_waterfall(self, event):
-        """Gère le survol de la souris sur le waterfall (mode CSV uniquement)."""
-        # Seulement actif en mode lecture CSV
-        if not self.mode_lecture_csv or not self.donnees_csv:
-            return
-        
-        # Vérifier que la souris est dans l'axe du waterfall
-        if event.inaxes != self.ax_waterfall:
-            # Supprimer l'annotation de survol si on sort du waterfall
-            if self.annotation_survol is not None:
-                self.annotation_survol.remove()
-                self.annotation_survol = None
-                self.canvas.draw_idle()
-            return
-        
-        # Récupérer les coordonnées
-        x_freq = event.xdata
-        y_ligne = event.ydata
-        
-        if x_freq is None or y_ligne is None:
-            return
-        
-        # Obtenir les données du waterfall
-        wf_data = self.image_waterfall.get_array()
-        nb_lignes, nb_points = wf_data.shape
-        
-        # Convertir la position en indices
-        extent = self.image_waterfall.get_extent()
-        freq_min, freq_max = extent[0], extent[1]
-        
-        # Calculer l'index de fréquence
-        idx_freq = int((x_freq - freq_min) / (freq_max - freq_min) * nb_points)
-        idx_freq = max(0, min(idx_freq, nb_points - 1))
-        
-        # Calculer l'index de ligne
-        idx_ligne = int(y_ligne)
-        idx_ligne = max(0, min(idx_ligne, nb_lignes - 1))
-        
-        # Récupérer la valeur de gain
-        gain = wf_data[idx_ligne, idx_freq]
-        
-        # Déterminer l'unité
-        unite = "dB (log)" if self.conversion_log_flag else "dBm"
-        
-        # Mettre à jour ou créer l'annotation de survol
-        texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz"
-        
-        if self.annotation_survol is None:
-            self.annotation_survol = self.ax_waterfall.annotate(
-                texte,
-                xy=(x_freq, y_ligne),
-                xytext=(10, 10),
-                textcoords='offset points',
-                fontsize=9,
-                color='white',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='#333366', alpha=0.9, edgecolor='#00ccff'),
-                zorder=100
-            )
-        else:
-            self.annotation_survol.set_text(texte)
-            self.annotation_survol.xy = (x_freq, y_ligne)
-        
-        self.canvas.draw_idle()
-    
-    def on_mouse_click_waterfall(self, event):
-        """Gère le clic sur le waterfall (mode CSV) pour afficher gain et temps."""
-        # Seulement actif en mode lecture CSV
-        if not self.mode_lecture_csv or not self.donnees_csv:
-            return
-        
-        # Vérifier que le clic est dans l'axe du waterfall
-        if event.inaxes != self.ax_waterfall:
-            return
-        
-        # Clic droit = effacer tous les marqueurs
-        if event.button == 3:
-            self.effacer_marqueurs_clic()
-            return
-        
-        # Clic gauche uniquement
-        if event.button != 1:
-            return
-        
-        # Récupérer les coordonnées
-        x_freq = event.xdata
-        y_ligne = event.ydata
-        
-        if x_freq is None or y_ligne is None:
-            return
-        
-        # Obtenir les données du waterfall
-        wf_data = self.image_waterfall.get_array()
-        nb_lignes, nb_points = wf_data.shape
-        
-        # Convertir la position en indices
-        extent = self.image_waterfall.get_extent()
-        freq_min, freq_max = extent[0], extent[1]
-        
-        idx_freq = int((x_freq - freq_min) / (freq_max - freq_min) * nb_points)
-        idx_freq = max(0, min(idx_freq, nb_points - 1))
-        
-        idx_ligne = int(y_ligne)
-        idx_ligne = max(0, min(idx_ligne, nb_lignes - 1))
-        
-        # Récupérer la valeur de gain
-        gain = wf_data[idx_ligne, idx_freq]
-        
-        # Récupérer le timestamp associé à cette ligne
-        timestamp_label = ""
-        if hasattr(self, 'waterfall_time_labels') and idx_ligne < len(self.waterfall_time_labels):
-            timestamp_label = self.waterfall_time_labels[idx_ligne]
-        
-        # Déterminer l'unité
-        unite = "dB (log)" if self.conversion_log_flag else "dBm"
-        
-        # Créer le texte de l'annotation (sans emojis pour compatibilité police)
-        texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz\nT: {timestamp_label}"
-        
-        # Créer un marqueur et une annotation permanente
-        marker, = self.ax_waterfall.plot(x_freq, y_ligne, 'o', color='#00ff00', markersize=8, zorder=99)
-        
-        annotation = self.ax_waterfall.annotate(
-            texte,
-            xy=(x_freq, y_ligne),
-            xytext=(15, -15),
-            textcoords='offset points',
-            fontsize=9,
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.4', facecolor='#1a4a1a', alpha=0.95, edgecolor='#00ff00'),
-            arrowprops=dict(arrowstyle='->', color='#00ff00', lw=1.5),
-            zorder=100
-        )
-        
-        # Stocker pour pouvoir effacer plus tard
-        self.clic_markers.append((marker, annotation))
-        
-        self.canvas.draw_idle()
-        
-        # Afficher aussi dans la console
-        print(f"[Clic WF] {gain:.1f} {unite} @ {x_freq:.4f} MHz | {timestamp_label}")
-    
-    def effacer_marqueurs_clic(self):
-        """Efface tous les marqueurs de clic sur le waterfall."""
-        for marker, annotation in self.clic_markers:
-            marker.remove()
-            annotation.remove()
-        self.clic_markers.clear()
-        
-        if self.annotation_clic is not None:
-            self.annotation_clic.remove()
-            self.annotation_clic = None
-        
-        self.canvas.draw_idle()
-        print("[WF] Marqueurs effacés")
     
     def toggle_connexion(self):
         """Connecte ou déconnecte du serveur."""
@@ -1473,7 +1277,7 @@ class IC705AppV7:
                 type_trame = None
                 timestamp = None
                 hex_data = None
-                want_gain_info = log_enabled and self.log_gains_flag and not self.mode_lecture_csv
+                want_gain_info = log_enabled and self.log_gains_flag
 
                 if log_enabled:
                     type_trame = identifier_type_trame(msg)
@@ -1550,7 +1354,7 @@ class IC705AppV7:
         if not self.affichage_actif:
             return
 
-        if self.use_buffer_bin and not self.mode_lecture_csv:
+        if self.use_buffer_bin:
             ready = self.pop_buffer_binaire()
             if ready is not None:
                 _, freq_centrale, spectre = ready
@@ -1728,124 +1532,8 @@ class IC705AppV7:
             self.canvas.draw_idle()
     
     def preparer_waterfall_pour_affichage(self, waterfall):
-        """Retourne les données waterfall en tenant compte du zoom."""
-        total_lignes = waterfall.shape[0]
-        if not self.mode_lecture_csv:
-            return waterfall
-        lignes_voulues = min(self.get_waterfall_zoom_depth(), total_lignes)
-        return waterfall[:lignes_voulues, :]
-    
-    def get_waterfall_zoom_depth(self):
-        """Nombre de lignes de waterfall à afficher (mode lecture)."""
-        return max(1, min(getattr(self, 'waterfall_zoom_lignes', PROFONDEUR_WATERFALL), PROFONDEUR_WATERFALL))
-    
-    def appliquer_zoom_waterfall(self):
-        """Réapplique le zoom waterfall (utilisé lors d'un changement de slider)."""
-        if not self.mode_lecture_csv:
-            return
-        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-        self.mettre_a_jour_echelle_temps(force=True)
-    
-    def configurer_affichage_csv(self, actif):
-        """Active/désactive le mode affichage CSV (sans blitting pour éviter le clignotement)."""
-        if actif:
-            self.use_blit_avant_csv = getattr(self, 'use_blit', False)
-            self.use_blit = False
-            if hasattr(self, 'ligne_spectre'):
-                self.ligne_spectre.set_animated(False)
-        else:
-            if self.use_blit_avant_csv:
-                self.use_blit = True
-                if hasattr(self, 'ligne_spectre'):
-                    self.ligne_spectre.set_animated(True)
-                if hasattr(self, 'canvas') and hasattr(self, 'fig'):
-                    self.canvas.draw()
-                    self.background = self.canvas.copy_from_bbox(self.fig.bbox)
-            else:
-                self.use_blit = False
-                if hasattr(self, 'ligne_spectre'):
-                    self.ligne_spectre.set_animated(False)
-    
-    def mettre_a_jour_echelle_temps(self, force=False):
-        """Mets à jour les ticks Y du waterfall pour afficher les timestamps en lecture CSV."""
-        if not hasattr(self, 'ax_waterfall'):
-            return
-        
-        if not self.mode_lecture_csv:
-            self.ax_waterfall.set_yticks([])
-            self.ax_waterfall.set_yticklabels([])
-            return
-        
-        now = time.monotonic()
-        if not force and (now - self.derniere_maj_temps) < self.interval_maj_temps:
-            return
-        self.derniere_maj_temps = now
-        
-        depth = self.image_waterfall.get_array().shape[0] if hasattr(self.image_waterfall, 'get_array') else 0
-        valides = [(i, ts) for i, ts in enumerate(self.waterfall_time_labels[:depth]) if ts]
-        if not valides:
-            self.ax_waterfall.set_yticks([])
-            self.ax_waterfall.set_yticklabels([])
-            return
-        
-        nb_ticks = min(6, len(valides))
-        indices = np.linspace(0, len(valides) - 1, nb_ticks, dtype=int)
-        ticks = []
-        labels = []
-        for idx in indices:
-            pos, ts = valides[idx]
-            ticks.append(pos)
-            labels.append(self.formater_label_temps(ts))
-        
-        self.ax_waterfall.set_yticks(ticks)
-        self.ax_waterfall.set_yticklabels(labels, color='white', fontsize=8)
-        self.canvas.draw_idle()
-    
-    @staticmethod
-    def formater_label_temps(ts):
-        """Retourne une version lisible du timestamp pour l'affichage."""
-        if ts is None:
-            return ""
-        ts = str(ts).strip()
-        if not ts:
-            return ""
-        
-        formats = (
-            "%Y-%m-%d %H:%M:%S.%f",
-            "%Y-%m-%d %H:%M:%S",
-            "%H:%M:%S.%f",
-            "%H:%M:%S",
-        )
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(ts, fmt)
-                if "%f" in fmt:
-                    return dt.strftime("%H:%M:%S.%f")[:-3]
-                return dt.strftime("%H:%M:%S")
-            except ValueError:
-                continue
-        
-        # Fallback: extraire la partie temps si possible
-        if "T" in ts:
-            ts = ts.split("T", 1)[-1]
-        if " " in ts:
-            ts = ts.split(" ", 1)[-1]
-        if ts.endswith("Z"):
-            ts = ts[:-1]
-        if "+" in ts:
-            ts = ts.split("+", 1)[0]
-        return ts
-
-    def configurer_sliders_dbm(self):
-        """Réinitialise les sliders à leurs valeurs dBm par défaut."""
-        if not hasattr(self, 'slider_min') or not hasattr(self, 'slider_max'):
-            return
-        
-        self.slider_min.config(from_=0, to=100)
-        self.slider_max.config(from_=50, to=150)
-        self.slider_min.set(self.dbm_min)
-        self.slider_max.set(self.dbm_max)
-        self.label_gain.config(text=f"Plage dBm: [{self.dbm_min} - {self.dbm_max}]")
+        """Retourne les donnees waterfall."""
+        return waterfall
 
     @staticmethod
     def convertir_spectre_log(spectre):
@@ -2098,611 +1786,8 @@ class IC705AppV7:
         except Exception as e:
             print(f"Erreur écriture CSV: {e}")
     
-    # === Fonctions de lecture CSV ===
-    @staticmethod
-    def _spectre_max_from_row(row):
-        """Retourne le max d'une ligne CSV sans stocker le spectre."""
-        try:
-            return max(float(v) for v in row[3:3 + LARGEUR_SPECTRE])
-        except (ValueError, IndexError):
-            return None
-
-    @staticmethod
-    def _parser_csv_row(row):
-        """Parse une ligne CSV en dictionnaire de donnees."""
-        try:
-            timestamp = row[0]
-            freq = float(row[1])
-            span = int(float(row[2]))
-            valeurs = np.fromiter(
-                (float(v) for v in row[3:3 + LARGEUR_SPECTRE]),
-                dtype=np.float32,
-                count=LARGEUR_SPECTRE
-            )
-            if valeurs.size != LARGEUR_SPECTRE:
-                return None
-            return {
-                'timestamp': timestamp,
-                'timestamp_label': None,
-                'freq': freq,
-                'span': span,
-                'spectre': valeurs
-            }
-        except (ValueError, IndexError):
-            return None
-
-    def _get_timestamp_label(self, data):
-        """Calcule le label temps a la demande (cache dans la ligne)."""
-        label = data.get('timestamp_label')
-        if not label:
-            label = self.formater_label_temps(data.get('timestamp'))
-            data['timestamp_label'] = label
-        return label
-
-    
-    def ouvrir_csv(self):
-        """Ouvre un fichier CSV ou ferme le mode lecture."""
-        if self.mode_lecture_csv:
-            self.fermer_csv_lecture()
-            return
-
-        if self.affichage_actif:
-            self.arreter_affichage()
-        if self.connecte:
-            self.deconnecter()
-
-        fichier = filedialog.askopenfilename(
-            title="Ouvrir un fichier CSV",
-            initialdir=DOSSIER_CSV if os.path.exists(DOSSIER_CSV) else ".",
-            filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")]
-        )
-
-        if not fichier:
-            return
-
-        try:
-            self.donnees_csv = []
-            lignes_ignorees = 0
-            nb_colonnes_attendues = 3 + LARGEUR_SPECTRE
-
-            use_filter = messagebox.askyesno(
-                "Filtre CSV",
-                "Filtrer les lignes par seuil de gain ?"
-            )
-            seuil_gain = None
-            contexte_lignes = 0
-            if use_filter:
-                seuil_gain = simpledialog.askfloat(
-                    "Seuil gain",
-                    "Seuil dBm (ex: 70):",
-                    parent=self.root
-                )
-                if seuil_gain is None:
-                    return
-                contexte_lignes = simpledialog.askinteger(
-                    "Contexte",
-                    "Nb lignes avant/apres (ex: 10):",
-                    parent=self.root,
-                    minvalue=0,
-                    maxvalue=500
-                )
-                if contexte_lignes is None:
-                    return
-
-            with open(fichier, 'r', newline='') as f:
-                reader = csv.reader(f)
-                header = next(reader, None)
-                if header is None:
-                    messagebox.showerror("Erreur", "Fichier CSV vide.")
-                    return
-                nb_colonnes_header = len(header)
-
-                print(f"CSV: {nb_colonnes_header} colonnes dans le header, {nb_colonnes_attendues} attendues")
-
-                if use_filter:
-                    buffer_avant = deque(maxlen=contexte_lignes)
-                    after_count = 0
-                    last_index_added = -1
-
-                for idx, row in enumerate(reader):
-                    if len(row) < nb_colonnes_attendues:
-                        lignes_ignorees += 1
-                        if lignes_ignorees <= 5:
-                            print(f"Ligne {idx+2} ignoree: {len(row)} colonnes au lieu de {nb_colonnes_attendues}")
-                        continue
-
-                    if use_filter:
-                        max_val = self._spectre_max_from_row(row)
-                        if max_val is None:
-                            lignes_ignorees += 1
-                            if lignes_ignorees <= 5:
-                                print(f"Ligne {idx+2} ignoree: valeurs invalides")
-                            continue
-
-                        hit = max_val >= seuil_gain
-                        if hit:
-                            for prev_idx, prev_row in buffer_avant:
-                                if prev_idx > last_index_added:
-                                    data = self._parser_csv_row(prev_row)
-                                    if data:
-                                        self.donnees_csv.append(data)
-                                        last_index_added = prev_idx
-                                    else:
-                                        lignes_ignorees += 1
-                            buffer_avant.clear()
-
-                            data = self._parser_csv_row(row)
-                            if data:
-                                self.donnees_csv.append(data)
-                                last_index_added = idx
-                            else:
-                                lignes_ignorees += 1
-
-                            after_count = contexte_lignes
-                            continue
-
-                        if after_count > 0:
-                            data = self._parser_csv_row(row)
-                            if data:
-                                self.donnees_csv.append(data)
-                                last_index_added = idx
-                            else:
-                                lignes_ignorees += 1
-                            after_count -= 1
-                            continue
-
-                        buffer_avant.append((idx, row))
-                    else:
-                        data = self._parser_csv_row(row)
-                        if data:
-                            self.donnees_csv.append(data)
-                        else:
-                            lignes_ignorees += 1
-                            if lignes_ignorees <= 5:
-                                print(f"Ligne {idx+2} ignoree: valeurs invalides")
-
-            if lignes_ignorees > 0:
-                print(f"Total: {lignes_ignorees} ligne(s) ignoree(s)")
-
-            if not self.donnees_csv:
-                if use_filter:
-                    messagebox.showerror("Erreur", "Aucune donnee apres filtrage.")
-                else:
-                    messagebox.showerror("Erreur", "Aucune donnee valide dans le fichier CSV")
-                return
-
-            print(f"CSV charge: {len(self.donnees_csv)} lignes valides")
-
-            self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
-            self.derniere_ligne_rejouee = None
-            self.mode_lecture_csv = True
-            self.index_lecture = 0
-            self.masquer_panneau_log()
-            self.configurer_affichage_csv(True)
-
-            if use_filter:
-                self.csv_filter_info = f">= {seuil_gain} dBm, ctx {contexte_lignes}"
-                self.label_status.config(
-                    text=f"CSV: {len(self.donnees_csv)} lignes (filtre {self.csv_filter_info})",
-                    fg='#00ccff'
-                )
-            else:
-                self.csv_filter_info = None
-                self.label_status.config(text=f"CSV: {len(self.donnees_csv)} lignes", fg='#00ccff')
-
-            self.btn_ouvrir_csv.config(text="Fermer CSV")
-
-            self.btn_connecter.config(state='disabled')
-            self.entry_ip.config(state='disabled')
-            self.entry_port.config(state='disabled')
-
-            self.charger_donnees_csv(force_rebuild=True)
-            self.creer_controles_lecture()
-
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Impossible de lire le fichier CSV:\n{e}")
-
-    def fermer_csv_lecture(self):
-        """Ferme le mode lecture CSV."""
-        self.arreter_lecture()
-        self.mode_lecture_csv = False
-        self.donnees_csv = None
-        self.csv_filter_info = None
-        self.waterfall_zoom_lignes = PROFONDEUR_WATERFALL
-        self.derniere_ligne_rejouee = None
-        self.afficher_panneau_log()
-        self.configurer_affichage_csv(False)
-        self.conversion_log.set(False)
-        self.conversion_log_flag = False
-        
-        # Effacer les marqueurs de clic sur le waterfall
-        self.effacer_marqueurs_clic()
-        if self.annotation_survol is not None:
-            self.annotation_survol.remove()
-            self.annotation_survol = None
-        
-        if hasattr(self, 'label_trigger_unit'):
-            self.label_trigger_unit.config(text="(dBm)")
-        if hasattr(self, 'image_waterfall'):
-            self.image_waterfall.set_cmap(WF_CMAP)
-            self.image_waterfall.set_clim(vmin=self.dbm_min, vmax=self.dbm_max)
-        if hasattr(self, 'ax_spectre'):
-            self.ax_spectre.set_ylabel("Niveau (dBm)")
-            self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
-        self.configurer_sliders_dbm()
-        
-        if hasattr(self, 'frame_lecture'):
-            self.frame_lecture.destroy()
-            del self.frame_lecture
-        if hasattr(self, 'btn_play'):
-            del self.btn_play
-        
-        self.label_status.config(text="⚪ Non connecté", fg='#ff6666')
-        self.btn_ouvrir_csv.config(text="Open CSV")
-        self.btn_connecter.config(state='normal')
-        self.entry_ip.config(state='normal')
-        self.entry_port.config(state='normal')
-        self.label_freq.config(text="---")
-        
-        self.spectre_actuel = np.zeros(LARGEUR_SPECTRE)
-        self.waterfall_data = np.zeros((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE))
-        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
-        self.freq_centrale = FREQUENCE_DEFAUT
-        self.mettre_a_jour_axe_freq()
-        
-        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-        self.mettre_a_jour_echelle_temps(force=True)
-    
-    def creer_controles_lecture(self):
-        """Crée les contrôles pour naviguer dans le CSV."""
-        if hasattr(self, 'frame_lecture'):
-            self.frame_lecture.destroy()
-        
-        self.frame_lecture = tk.Frame(self.root, bg='#1a1a2e')
-        self.frame_lecture.pack(fill='x', padx=10, pady=5, before=self.frame_principal)
-        
-        tk.Label(
-            self.frame_lecture,
-            text="📼 Lecture CSV:",
-            font=("Helvetica", 11, "bold"),
-            fg='#00ccff',
-            bg='#1a1a2e'
-        ).pack(side='left', padx=10)
-        
-        self.btn_debut = tk.Button(
-            self.frame_lecture, text="⏮", font=("Helvetica", 12),
-            width=3, command=lambda: self.aller_a_position(0)
-        )
-        self.btn_debut.pack(side='left', padx=2)
-        
-        self.btn_reculer = tk.Button(
-            self.frame_lecture, text="◀", font=("Helvetica", 12),
-            width=3, command=lambda: self.aller_a_position(max(0, self.index_lecture - 10))
-        )
-        self.btn_reculer.pack(side='left', padx=2)
-        
-        self.btn_play = tk.Button(
-            self.frame_lecture, text="▶ Play", font=("Helvetica", 11, "bold"),
-            width=8, command=self.toggle_lecture
-        )
-        self.btn_play.pack(side='left', padx=5)
-        
-        self.btn_avancer = tk.Button(
-            self.frame_lecture, text="▶", font=("Helvetica", 12),
-            width=3, command=lambda: self.aller_a_position(min(len(self.donnees_csv)-1, self.index_lecture + 10))
-        )
-        self.btn_avancer.pack(side='left', padx=2)
-        
-        self.btn_fin = tk.Button(
-            self.frame_lecture, text="⏭", font=("Helvetica", 12),
-            width=3, command=lambda: self.aller_a_position(len(self.donnees_csv) - 1)
-        )
-        self.btn_fin.pack(side='left', padx=2)
-        
-        self.slider_position = tk.Scale(
-            self.frame_lecture,
-            from_=0, to=len(self.donnees_csv) - 1,
-            orient='horizontal',
-            length=300,
-            bg='#2a2a4e',
-            fg='white',
-            troughcolor='#1a1a3e',
-            highlightthickness=0,
-            font=('Helvetica', 9),
-            command=self.on_slider_position_change
-        )
-        self.slider_position.pack(side='left', padx=10)
-        
-        self.label_position = tk.Label(
-            self.frame_lecture,
-            text="0 / 0",
-            font=("Helvetica", 10),
-            fg='#aaaaaa',
-            bg='#1a1a2e',
-            width=20
-        )
-        self.label_position.pack(side='left', padx=10)
-        
-        tk.Label(
-            self.frame_lecture,
-            text="Vitesse:",
-            font=("Helvetica", 10),
-            fg='#aaaaaa',
-            bg='#1a1a2e'
-        ).pack(side='left', padx=5)
-        
-        self.slider_vitesse = tk.Scale(
-            self.frame_lecture,
-            from_=1, to=50,
-            orient='horizontal',
-            length=100,
-            bg='#2a2a4e',
-            fg='white',
-            troughcolor='#1a1a3e',
-            highlightthickness=0,
-            font=('Helvetica', 9)
-        )
-        self.slider_vitesse.set(10)
-        self.slider_vitesse.pack(side='left', padx=5)
-        
-        tk.Label(
-            self.frame_lecture,
-            text="Rendu:",
-            font=("Helvetica", 10),
-            fg='#aaaaaa',
-            bg='#1a1a2e'
-        ).pack(side='left', padx=5)
-
-        self.slider_rendu = tk.Scale(
-            self.frame_lecture,
-            from_=1, to=5,
-            orient='horizontal',
-            length=90,
-            bg='#2a2a4e',
-            fg='white',
-            troughcolor='#1a1a3e',
-            highlightthickness=0,
-            font=('Helvetica', 9),
-            command=self.on_rendu_change
-        )
-        self.slider_rendu.set(self.csv_render_every)
-        self.slider_rendu.pack(side='left', padx=5)
-
-        tk.Label(
-            self.frame_lecture,
-            text="Zoom WF:",
-            font=("Helvetica", 10),
-            fg='#aaaaaa',
-            bg='#1a1a2e'
-        ).pack(side='left', padx=5)
-        
-        self.slider_zoom_wf = tk.Scale(
-            self.frame_lecture,
-            from_=5, to=PROFONDEUR_WATERFALL,
-            orient='horizontal',
-            length=120,
-            bg='#2a2a4e',
-            fg='white',
-            troughcolor='#1a1a3e',
-            highlightthickness=0,
-            font=('Helvetica', 9),
-            command=self.on_zoom_waterfall_change
-        )
-        self.slider_zoom_wf.set(self.get_waterfall_zoom_depth())
-        self.slider_zoom_wf.pack(side='left', padx=5)
-        
-        self.cb_conv_log = tk.Checkbutton(
-            self.frame_lecture,
-            text="Conv. Log",
-            variable=self.conversion_log,
-            font=('Helvetica', 10, 'bold'),
-            bg='#1a1a2e',
-            fg='white',
-            selectcolor='#2a2a4e',
-            command=self.on_toggle_conversion_log_lecture
-        )
-        self.cb_conv_log.pack(side='left', padx=10)
-        
-        self.mettre_slider_position(self.index_lecture)
-        self.appliquer_scale_police(self.frame_lecture)
-    
-    def mettre_slider_position(self, index):
-        """Met à jour le slider de position sans déclencher d'événement."""
-        if hasattr(self, 'slider_position'):
-            self.slider_update_en_cours = True
-            self.slider_position.set(index)
-            self.slider_update_en_cours = False
-    
-    def on_slider_position_change(self, value):
-        """Appelé quand le slider de position change."""
-        if self.slider_update_en_cours:
-            return
-        self.aller_a_position(int(value), force_rebuild=True)
-    
-    def on_rendu_change(self, value):
-        """Ajuste la cadence de rendu pour la lecture CSV."""
-        try:
-            rendu = int(float(value))
-        except (TypeError, ValueError):
-            return
-        rendu = max(1, min(rendu, 5))
-        self.csv_render_every = rendu
-        self.csv_stats_every = max(1, rendu * 2)
-        self.csv_ticks_every = max(1, rendu * 3)
-        self.csv_slider_every = max(1, rendu)
-
-    def on_zoom_waterfall_change(self, value):
-        """Change le zoom du waterfall (lecture CSV)."""
-        try:
-            lignes = int(float(value))
-        except (TypeError, ValueError):
-            return
-        self.waterfall_zoom_lignes = max(1, min(lignes, PROFONDEUR_WATERFALL))
-        self.appliquer_zoom_waterfall()
-    
-    def on_toggle_conversion_log_lecture(self):
-        """Bascule la conversion log supplémentaire (lecture CSV)."""
-        try:
-            actif = bool(self.conversion_log.get())
-        except tk.TclError:
-            actif = False
-        self.conversion_log_flag = actif
-        
-        # Rafraîchir avec les données courantes
-        self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=True)
-    
-    def aller_a_position(self, index, force_rebuild=True):
-        """Va à une position spécifique dans le CSV."""
-        if not self.donnees_csv or index < 0 or index >= len(self.donnees_csv):
-            return
-        
-        self.index_lecture = index
-        self.charger_donnees_csv(force_rebuild=force_rebuild)
-        self.mettre_slider_position(index)
-    
-    def charger_donnees_csv(self, force_rebuild=False, render=True, update_stats=True, update_ticks=True, update_labels=True):
-        """Charge et affiche les données à la position actuelle."""
-        if not self.donnees_csv:
-            return
-        
-        data = self.donnees_csv[self.index_lecture]
-        
-        if len(data['spectre']) != LARGEUR_SPECTRE:
-            print(f"Attention: spectre ligne {self.index_lecture} a {len(data['spectre'])} points au lieu de {LARGEUR_SPECTRE}")
-        
-        freq_changed = data['freq'] != self.freq_centrale
-        if freq_changed:
-            self.freq_centrale = data['freq']
-            demi_span = SPAN_KHZ / 2000
-            freq_min = self.freq_centrale - demi_span
-            freq_max = self.freq_centrale + demi_span
-            self.axe_freq = np.linspace(freq_min, freq_max, LARGEUR_SPECTRE)
-            self.ax_spectre.set_xlim(freq_min, freq_max)
-            self.ax_spectre.set_title(f"Spectre IC-705 - {self.freq_centrale:.3f} MHz (CSV)", color='white')
-            self.ax_spectre.set_ylabel("Niveau (dBm)")
-            self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
-            current_depth = self.waterfall_data.shape[0]
-            self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
-            self.ax_waterfall.set_xlim(freq_min, freq_max)
-            self.ax_waterfall.set_ylim(current_depth, 0)
-            self.waterfall_extent = (freq_min, freq_max, current_depth, 0)
-            self.ligne_centre.set_xdata([self.freq_centrale, self.freq_centrale])
-        
-        self.spectre_actuel = data['spectre']
-        
-        if not force_rebuild and self.derniere_ligne_rejouee is not None and self.index_lecture == self.derniere_ligne_rejouee + 1:
-            self.mettre_a_jour_waterfall_incremental(data)
-            force_full = False
-        else:
-            self.reconstruire_waterfall_depuis_index()
-            force_full = True
-        
-        self.derniere_ligne_rejouee = self.index_lecture
-        
-        if render:
-            self.rafraichir_graphique(self.spectre_actuel, self.waterfall_data, force_full=force_full)
-        if update_stats:
-            self.mettre_a_jour_statistiques(self.spectre_actuel)
-        if update_ticks:
-            self.mettre_a_jour_echelle_temps(force=force_full)
-        
-        if update_labels or freq_changed:
-            self.label_freq.config(text=f"{self.freq_centrale:.3f} MHz")
-            if hasattr(self, 'label_position'):
-                self.label_position.config(
-                    text=f"{self.index_lecture + 1} / {len(self.donnees_csv)} - {self._get_timestamp_label(data)}"
-                )
-    
-    def mettre_a_jour_waterfall_incremental(self, data):
-        """Décale le waterfall et insère la nouvelle ligne (lecture séquentielle)."""
-        self.waterfall_data[1:] = self.waterfall_data[:-1]
-        self.waterfall_data[0] = data['spectre']
-        self.waterfall_time_labels[1:] = self.waterfall_time_labels[:-1]
-        self.waterfall_time_labels[0] = self._get_timestamp_label(data)
-    
-    def reconstruire_waterfall_depuis_index(self):
-        """Reconstruit entièrement le waterfall autour de l'index courant."""
-        self.waterfall_data.fill(0)
-        self.waterfall_time_labels = [""] * PROFONDEUR_WATERFALL
-        
-        dest = 0
-        for src in range(self.index_lecture, -1, -1):
-            if dest >= PROFONDEUR_WATERFALL:
-                break
-            ligne = self.donnees_csv[src]['spectre']
-            self.waterfall_data[dest] = ligne
-            self.waterfall_time_labels[dest] = self._get_timestamp_label(self.donnees_csv[src])
-            dest += 1
-    
-    def toggle_lecture(self):
-        """Démarre ou arrête la lecture automatique."""
-        if self.lecture_en_cours:
-            self.arreter_lecture()
-        else:
-            self.demarrer_lecture()
-    
-    def demarrer_lecture(self):
-        """Démarre la lecture automatique."""
-        self.lecture_en_cours = True
-        self.csv_frame_count = 0
-        if hasattr(self, 'btn_play'):
-            try:
-                self.btn_play.config(text="⏸ Pause")
-            except tk.TclError:
-                pass
-        self.lecture_auto()
-    
-    def arreter_lecture(self):
-        """Arrête la lecture automatique."""
-        self.lecture_en_cours = False
-        if hasattr(self, 'btn_play'):
-            try:
-                self.btn_play.config(text="▶ Play")
-            except tk.TclError:
-                pass
-    
-    def lecture_auto(self):
-        """Boucle de lecture automatique."""
-        if not self.lecture_en_cours or not self.mode_lecture_csv:
-            return
-
-        if self.index_lecture < len(self.donnees_csv) - 1:
-            self.index_lecture += 1
-            self.csv_frame_count += 1
-
-            render = (self.csv_frame_count % self.csv_render_every) == 0
-            update_stats = (self.csv_frame_count % self.csv_stats_every) == 0
-            update_ticks = (self.csv_frame_count % self.csv_ticks_every) == 0
-            update_slider = (self.csv_frame_count % self.csv_slider_every) == 0
-
-            self.charger_donnees_csv(
-                force_rebuild=False,
-                render=render,
-                update_stats=update_stats,
-                update_ticks=update_ticks,
-                update_labels=render
-            )
-            if update_slider:
-                self.mettre_slider_position(self.index_lecture)
-
-            try:
-                vitesse = self.slider_vitesse.get()
-            except Exception:
-                vitesse = 10
-            # Pour limiter la charge CPU/Tk sur macOS, delai min 40ms (~25 FPS)
-            delai = max(40, 200 // max(1, int(vitesse)))
-
-            try:
-                self.after_lecture_id = self.root.after(delai, self.lecture_auto)
-            except tk.TclError:
-                self.after_lecture_id = None
-        else:
-            self.arreter_lecture()
-
     def quitter(self):
         """Ferme l'application proprement."""
-        if self.mode_lecture_csv:
-            self.fermer_csv_lecture()
         self.arreter_affichage()
         self.deconnecter()
         plt.close('all')
