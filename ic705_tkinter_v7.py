@@ -3,13 +3,13 @@
 """
 IC-705 Spectrum Display avec Tkinter - Version 7
 ================================================
-Version avec affichage dBm natif (données brutes du IC-705).
+Version avec affichage brut (0-255) des données du IC-705.
 
 Fonctionnalités:
-- Affichage du spectre et waterfall en temps réel en dBm
-- Les données brutes du IC-705 sont interprétées comme des niveaux dBm
+- Affichage du spectre et waterfall en temps réel en brut (0-255)
+- Les données brutes du IC-705 sont affichées comme des niveaux bruts
  - Panneau de log des trames CI-V en hexadécimal (optionnel)
-- Sliders de niveau min/max en dBm
+- Sliders de niveau min/max en brut
 - Enregistrement CSV
 - Mode Trigger pour l'enregistrement
 - Lecture de fichiers CSV
@@ -52,11 +52,11 @@ MAX_LOG_LINES = 200
 LOG_UPDATE_INTERVAL = 300  # Moins fréquent pour économiser des ressources
 MAX_TRAMES_PAR_UPDATE = 15
 DOSSIER_CSV = "recep_csv"
-# Plage dBm par défaut pour l'affichage (données brutes IC-705)
+# Plage brute pour l'affichage (0-255)
 DBM_MIN = 0
-DBM_MAX = 120
+DBM_MAX = 255
 WF_CMAP = "inferno"  # Colormap pour le waterfall
-BUFFER_DELAY_SEC = 5.0
+BUFFER_DELAY_SEC = 0.5  # Réduit de 5.0 pour affichage quasi temps réel
 BUFFER_MAX_SEC = 30.0
 UI_SCALE = 1.25
 FONT_SCALE = 1.35
@@ -196,6 +196,29 @@ def redimensionner_spectre(donnees, largeur_cible):
         return np.interp(x_nouveau, x_original, donnees)
 
 
+def normaliser_spectre(donnees, raw_max=None):
+    """
+    Normalise les valeurs brutes IC-705 (0-255) vers une plage 0-100.
+    
+    Args:
+        donnees: array numpy des valeurs brutes
+        raw_max: valeur brute maximale pour la calibration (défaut: RAW_MAX_CALIBRATION)
+    
+    Returns:
+        array numpy normalisé entre 0 et 100
+    """
+    if donnees is None or len(donnees) == 0:
+        return donnees
+    
+    if raw_max is None:
+        raw_max = RAW_MAX_CALIBRATION
+    
+    # Normalisation linéaire: raw_value / raw_max * 100
+    # Clamp entre 0 et 100
+    normalise = (donnees / raw_max) * 100.0
+    return np.clip(normalise, 0, 100)
+
+
 def trame_vers_hex(msg):
     """Convertit une trame en chaîne hexadécimale lisible."""
     return ' '.join(f'{b:02X}' for b in msg)
@@ -236,7 +259,7 @@ class IC705AppV7:
     def __init__(self, root):
         """Initialise l'application."""
         self.root = root
-        self.root.title("IC-705 Spectrum Display v7 - dBm")
+        self.root.title("IC-705 Spectrum Display v7")
         self.root.geometry("1400x800")
         self.root.configure(bg='#1a1a2e')
         self.root.minsize(1200, 600)
@@ -270,7 +293,7 @@ class IC705AppV7:
         self.nb_segments_attendus = 0
         self.segments_recus_count = 0
         
-        # Paramètres de niveau dBm (données brutes IC-705)
+        # Paramètres de niveau brut (0-255)
         self.dbm_min = DBM_MIN
         self.dbm_max = DBM_MAX
         self.offset_calibration = 0  # Offset de calibration en dB
@@ -302,7 +325,7 @@ class IC705AppV7:
             self.log_autres_flag = False
             self.log_gains_flag = False
         
-        # Option de conversion log (désactivée par défaut car données déjà en dBm)
+        # Option de conversion log (désactivée par défaut car données déjà brutes)
         self.conversion_log = tk.BooleanVar(value=False)
         self.conversion_log_flag = False
         
@@ -318,7 +341,7 @@ class IC705AppV7:
         # Trigger pour enregistrement
         self.trigger_actif = tk.BooleanVar(value=False)
         self.trigger_actif_flag = False
-        self.seuil_trigger = 70
+        self.seuil_trigger = 70  # Seuil brut (plage 0-255)
         self.au_dessus_seuil = False
         self.nb_fichiers_trigger = 0
         self.trigger_pre_buffer = deque(maxlen=TRIGGER_PRE_LINES)
@@ -493,7 +516,7 @@ class IC705AppV7:
         # Titre
         titre = tk.Label(
             frame_controles,
-            text="📡 IC-705 Spectrum Display v7 - dBm",
+            text="📡 IC-705 Spectrum v7",
             font=("Helvetica", 18, "bold"),
             fg='#00ff88',
             bg='#1a1a2e'
@@ -569,7 +592,7 @@ class IC705AppV7:
         self.entry_seuil.pack(side='left', padx=2)
         self.label_trigger_unit = tk.Label(
             frame_trigger,
-            text="(lin)",
+            text="(brut)",
             fg='white',
             bg='#1a1a2e',
             font=('Helvetica', 10)
@@ -616,15 +639,15 @@ class IC705AppV7:
         )
         self.label_rec.pack(side='right', padx=5)
         
-        # === Frame pour les sliders de niveau dBm ===
+        # === Frame pour les sliders de niveau (0-255) ===
         frame_sliders = tk.Frame(self.root, bg='#1a1a2e')
         frame_sliders.pack(fill='x', padx=10, pady=5)
         
-        tk.Label(frame_sliders, text="dBm Min:", fg='#4a90d9', bg='#1a1a2e', 
+        tk.Label(frame_sliders, text="Min:", fg='#4a90d9', bg='#1a1a2e', 
                  font=('Helvetica', 11, 'bold')).pack(side='left', padx=5)
         self.slider_min = tk.Scale(
             frame_sliders,
-            from_=0, to=100,
+            from_=0, to=255,
             orient='horizontal',
             length=180,
             bg='#2a2a4e',
@@ -637,11 +660,11 @@ class IC705AppV7:
         self.slider_min.set(self.dbm_min)
         self.slider_min.pack(side='left', padx=10)
         
-        tk.Label(frame_sliders, text="dBm Max:", fg='#d94a4a', bg='#1a1a2e',
+        tk.Label(frame_sliders, text="Max:", fg='#d94a4a', bg='#1a1a2e',
                  font=('Helvetica', 11, 'bold')).pack(side='left', padx=5)
         self.slider_max = tk.Scale(
             frame_sliders,
-            from_=50, to=150,
+            from_=0, to=255,
             orient='horizontal',
             length=180,
             bg='#2a2a4e',
@@ -656,7 +679,7 @@ class IC705AppV7:
         
         self.label_gain = tk.Label(
             frame_sliders,
-            text=f"Plage dBm: [{self.dbm_min} - {self.dbm_max}]",
+            text=f"Plage: [{self.dbm_min} - {self.dbm_max}]",
             fg='#00ccff',
             bg='#1a1a2e',
             font=('Helvetica', 11, 'bold')
@@ -716,7 +739,7 @@ class IC705AppV7:
                  font=('Helvetica', 10)).pack(side='left', padx=(10, 2))
         self.label_stat_min = tk.Label(
             frame_stats,
-            text="-- dBm (--)",
+            text="--",
             fg='white',
             bg='#1a1a2e',
             font=('Consolas', 10)
@@ -728,7 +751,7 @@ class IC705AppV7:
                  font=('Helvetica', 10)).pack(side='left', padx=(15, 2))
         self.label_stat_max = tk.Label(
             frame_stats,
-            text="-- dBm (--)",
+            text="--",
             fg='white',
             bg='#1a1a2e',
             font=('Consolas', 10)
@@ -740,7 +763,7 @@ class IC705AppV7:
                  font=('Helvetica', 10)).pack(side='left', padx=(15, 2))
         self.label_stat_moy = tk.Label(
             frame_stats,
-            text="-- dBm (--)",
+            text="--",
             fg='white',
             bg='#1a1a2e',
             font=('Consolas', 10)
@@ -989,7 +1012,7 @@ class IC705AppV7:
             self.dbm_min = self.dbm_max - 10
             self.slider_min.set(self.dbm_min)
         
-        self.label_gain.config(text=f"Plage dBm: [{self.dbm_min} - {self.dbm_max}]")
+        self.label_gain.config(text=f"Plage: [{self.dbm_min} - {self.dbm_max}]")
         
         if hasattr(self, 'ax_spectre'):
             self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
@@ -1042,7 +1065,7 @@ class IC705AppV7:
         # === Configurer le spectre ===
         self.ax_spectre.set_title(f'Spectre IC-705 - {self.freq_centrale:.3f} MHz', color='white')
         self.ax_spectre.set_xlabel('Fréquence (MHz)', color='white')
-        self.ax_spectre.set_ylabel('Niveau (dBm)', color='white')
+        self.ax_spectre.set_ylabel('Niveau', color='white')
         self.ax_spectre.set_xlim(freq_min, freq_max)
         self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
         self.ax_spectre.tick_params(colors='white')
@@ -1083,7 +1106,7 @@ class IC705AppV7:
             cax=self.ax_colorbar,
             orientation='vertical'
         )
-        self.colorbar.set_label('Niveau (dBm)', color='white', fontsize=10)
+        self.colorbar.set_label('Niveau', color='white', fontsize=10)
         self.ax_colorbar.tick_params(colors='white', labelsize=9)
         self.ax_colorbar.yaxis.set_ticks_position('right')
         self.ax_colorbar.yaxis.set_label_position('right')
@@ -1167,7 +1190,7 @@ class IC705AppV7:
         gain = wf_data[idx_ligne, idx_freq]
         
         # Déterminer l'unité
-        unite = "dB (log)" if self.conversion_log_flag else "dBm"
+        unite = "dB (log)" if self.conversion_log_flag else "%"
         
         # Mettre à jour ou créer l'annotation de survol
         texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz"
@@ -1238,7 +1261,7 @@ class IC705AppV7:
             timestamp_label = self.waterfall_time_labels[idx_ligne]
         
         # Déterminer l'unité
-        unite = "dB (log)" if self.conversion_log_flag else "dBm"
+        unite = "dB (log)" if self.conversion_log_flag else "%"
         
         # Créer le texte de l'annotation (sans emojis pour compatibilité police)
         texte = f"{gain:.1f} {unite}\n{x_freq:.4f} MHz\nT: {timestamp_label}"
@@ -1494,7 +1517,7 @@ class IC705AppV7:
                     if should_log_frame and len(self.trames_a_logger) < MAX_TRAMES_QUEUE:
                         self.trames_a_logger.append((timestamp, type_trame, hex_data))
                     if want_gain_info and len(self.trames_a_logger) < MAX_TRAMES_QUEUE:
-                        info_gain = f"f={self.freq_centrale:.3f} MHz | min={self.dbm_min} dBm | max={self.dbm_max} dBm"
+                        info_gain = f"f={self.freq_centrale:.3f} MHz | min={self.dbm_min} | max={self.dbm_max}"
                         self.trames_a_logger.append((timestamp, "LEVEL", info_gain))
 
                 # Traiter les reponses de frequence (commande 0x03)
@@ -1508,39 +1531,27 @@ class IC705AppV7:
                     result = extraire_donnees_spectre(msg)
                     if result is not None:
                         segment_num, nb_segments, amplitudes = result
+                        
+                        # DEBUG: Afficher info segments (décommenter pour debug)
+                        # print(f"[DEBUG] Segment {segment_num}/{nb_segments}, len={len(amplitudes)}, min={amplitudes.min():.0f}, max={amplitudes.max():.0f}")
 
-                        # Si le nombre de segments change, reinitialiser
-                        if nb_segments != self.nb_segments_attendus:
-                            self.reinitialiser_segments(nb_segments)
+                        # Traiter directement les amplitudes comme spectre complet
+                        # (la segmentation de l'IC-705 n'est pas fiable dans tous les modes)
+                        spectre = redimensionner_spectre(amplitudes, LARGEUR_SPECTRE)
 
-                        # Stocker ce segment
-                        if 0 <= segment_num < self.nb_segments_attendus:
-                            if self.segments_spectre[segment_num] is None:
-                                self.segments_recus_count += 1
-                            self.segments_spectre[segment_num] = amplitudes
+                        if self.use_buffer_bin:
+                            freq_centrale = self.nouvelle_frequence if self.nouvelle_frequence is not None else self.freq_centrale
+                            self.push_buffer_binaire(spectre, freq_centrale)
+                        else:
+                            with self.lock_donnees:
+                                self.spectre_actuel = spectre.copy()
+                                self.waterfall_data[1:] = self.waterfall_data[:-1]
+                                self.waterfall_data[0] = spectre.copy()
+                                self.nouvelles_donnees = True
 
-                        # Verifier si tous les segments sont recus
-                        if self.nb_segments_attendus > 0 and self.segments_recus_count >= self.nb_segments_attendus:
-                            spectre_array = np.concatenate(self.segments_spectre)
-                            spectre = redimensionner_spectre(spectre_array, LARGEUR_SPECTRE)
-
-                            if self.use_buffer_bin:
-                                freq_centrale = self.nouvelle_frequence if self.nouvelle_frequence is not None else self.freq_centrale
-
-                                self.push_buffer_binaire(spectre, freq_centrale)
-                            else:
-                                with self.lock_donnees:
-                                    self.spectre_actuel = spectre.copy()
-                                    self.waterfall_data[1:] = self.waterfall_data[:-1]
-                                    self.waterfall_data[0] = spectre.copy()
-                                    self.nouvelles_donnees = True
-
-                            # Enregistrer dans le CSV si actif
-                            if self.enregistrement_actif:
-                                self.enregistrer_spectre(spectre)
-
-                            # Reinitialiser pour le prochain cycle
-                            self.reinitialiser_segments(self.nb_segments_attendus)
+                        # Enregistrer dans le CSV si actif
+                        if self.enregistrement_actif:
+                            self.enregistrer_spectre(spectre)
 
             if len(buffer) > 10000:
                 buffer.clear()
@@ -1629,15 +1640,10 @@ class IC705AppV7:
             # Calcul de la moyenne globale
             val_moy = self.stat_somme / self.stat_count if self.stat_count > 0 else 0
             
-            # Conversion en raw 0-255
-            raw_min = int(round(self.stat_global_min))
-            raw_max = int(round(self.stat_global_max))
-            raw_moy = int(round(val_moy))
-            
             # Mise à jour des labels
-            self.label_stat_min.config(text=f"{self.stat_global_min:.1f} dBm ({raw_min})")
-            self.label_stat_max.config(text=f"{self.stat_global_max:.1f} dBm ({raw_max})")
-            self.label_stat_moy.config(text=f"{val_moy:.1f} dBm ({raw_moy})")
+            self.label_stat_min.config(text=f"{self.stat_global_min:.0f}")
+            self.label_stat_max.config(text=f"{self.stat_global_max:.0f}")
+            self.label_stat_moy.config(text=f"{val_moy:.0f}")
         except Exception:
             pass  # Ignore les erreurs pour ne pas bloquer l'affichage
     
@@ -1648,9 +1654,9 @@ class IC705AppV7:
         self.stat_somme = 0.0
         self.stat_count = 0
         try:
-            self.label_stat_min.config(text="-- dBm (--)")
-            self.label_stat_max.config(text="-- dBm (--)")
-            self.label_stat_moy.config(text="-- dBm (--)")
+            self.label_stat_min.config(text="--")
+            self.label_stat_max.config(text="--")
+            self.label_stat_moy.config(text="--")
         except (tk.TclError, AttributeError):
             pass
     
@@ -1661,7 +1667,7 @@ class IC705AppV7:
         Quand force_full=True, on force un draw complet (utile hors mode temps réel)
         pour que la ligne du spectre soit bien visible même en mode lecture CSV.
         
-        Les données brutes du IC-705 sont interprétées directement comme des niveaux dBm.
+        Les données brutes du IC-705 sont interprétées directement comme des niveaux bruts.
         """
         # Application optionnelle d'une conversion log supplémentaire
         if self.conversion_log_flag:
@@ -1837,15 +1843,15 @@ class IC705AppV7:
         return ts
 
     def configurer_sliders_dbm(self):
-        """Réinitialise les sliders à leurs valeurs dBm par défaut."""
+        """Réinitialise les sliders à leurs valeurs par défaut (0-255)."""
         if not hasattr(self, 'slider_min') or not hasattr(self, 'slider_max'):
             return
         
-        self.slider_min.config(from_=0, to=100)
-        self.slider_max.config(from_=50, to=150)
+        self.slider_min.config(from_=0, to=255)
+        self.slider_max.config(from_=0, to=255)
         self.slider_min.set(self.dbm_min)
         self.slider_max.set(self.dbm_max)
-        self.label_gain.config(text=f"Plage dBm: [{self.dbm_min} - {self.dbm_max}]")
+        self.label_gain.config(text=f"Plage: [{self.dbm_min} - {self.dbm_max}]")
 
     @staticmethod
     def convertir_spectre_log(spectre):
@@ -1862,8 +1868,8 @@ class IC705AppV7:
             self.conversion_log_flag = False
 
     def unite_trigger(self):
-        """Retourne l'unité affichée pour le trigger (toujours dBm)."""
-        return "dBm"
+        """Retourne l'unité affichée pour le trigger."""
+        return "brut"
     
     def boucle_log(self):
         """Met à jour le log des trames."""
@@ -1990,7 +1996,7 @@ class IC705AppV7:
         if not self.enregistrement_actif:
             return
 
-        # Les donnees brutes sont deja en dBm
+        # Les donnees brutes sont deja en brut
         max_signal = float(np.max(spectre))
         seuil = self.seuil_trigger
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -2019,10 +2025,10 @@ class IC705AppV7:
                         self.post_trigger_restantes -= 1
                         if self.post_trigger_restantes <= 0:
                             self.fermer_csv_trigger()
-                            self.rec_status_text = f"TRIGGER: attente signal > {seuil} dBm"
+                            self.rec_status_text = f"TRIGGER: attente signal > {seuil}"
                     else:
                         self.fermer_csv_trigger()
-                        self.rec_status_text = f"TRIGGER: attente signal > {seuil} dBm"
+                        self.rec_status_text = f"TRIGGER: attente signal > {seuil}"
 
                 if not self.writer_csv:
                     self._push_trigger_prebuffer(spectre, timestamp, freq_mhz, span_khz)
@@ -2174,7 +2180,7 @@ class IC705AppV7:
             if use_filter:
                 seuil_gain = simpledialog.askfloat(
                     "Seuil gain",
-                    "Seuil dBm (ex: 70):",
+                    "Seuil brut (ex: 70):",
                     parent=self.root
                 )
                 if seuil_gain is None:
@@ -2281,7 +2287,7 @@ class IC705AppV7:
             self.configurer_affichage_csv(True)
 
             if use_filter:
-                self.csv_filter_info = f">= {seuil_gain} dBm, ctx {contexte_lignes}"
+                self.csv_filter_info = f">= {seuil_gain} brut, ctx {contexte_lignes}"
                 self.label_status.config(
                     text=f"CSV: {len(self.donnees_csv)} lignes (filtre {self.csv_filter_info})",
                     fg='#00ccff'
@@ -2322,12 +2328,12 @@ class IC705AppV7:
             self.annotation_survol = None
         
         if hasattr(self, 'label_trigger_unit'):
-            self.label_trigger_unit.config(text="(dBm)")
+            self.label_trigger_unit.config(text="(brut)")
         if hasattr(self, 'image_waterfall'):
             self.image_waterfall.set_cmap(WF_CMAP)
             self.image_waterfall.set_clim(vmin=self.dbm_min, vmax=self.dbm_max)
         if hasattr(self, 'ax_spectre'):
-            self.ax_spectre.set_ylabel("Niveau (dBm)")
+            self.ax_spectre.set_ylabel("Niveau")
             self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
         self.configurer_sliders_dbm()
         
@@ -2579,7 +2585,7 @@ class IC705AppV7:
             self.axe_freq = np.linspace(freq_min, freq_max, LARGEUR_SPECTRE)
             self.ax_spectre.set_xlim(freq_min, freq_max)
             self.ax_spectre.set_title(f"Spectre IC-705 - {self.freq_centrale:.3f} MHz (CSV)", color='white')
-            self.ax_spectre.set_ylabel("Niveau (dBm)")
+            self.ax_spectre.set_ylabel("Niveau")
             self.ax_spectre.set_ylim(self.dbm_min, self.dbm_max)
             current_depth = self.waterfall_data.shape[0]
             self.image_waterfall.set_extent([freq_min, freq_max, current_depth, 0])
