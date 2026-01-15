@@ -25,13 +25,14 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.ticker import FuncFormatter
 
 # ============================================================
 #              PARAMÈTRES
 # ============================================================
 
 LARGEUR_SPECTRE = 475
-PROFONDEUR_WATERFALL = 100
+PROFONDEUR_WATERFALL = 200
 WF_CMAP = "inferno"
 
 DBM_MIN_DEFAULT = -160
@@ -59,6 +60,7 @@ class CSVReader:
         
         # Waterfall buffer
         self.waterfall = np.full((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE), -160.0)
+        self.waterfall_times = [''] * PROFONDEUR_WATERFALL  # Buffer des timestamps
         
         # Paramètres affichage
         self.dbm_min = DBM_MIN_DEFAULT
@@ -87,6 +89,12 @@ class CSVReader:
         self.btn_ouvrir = tk.Button(top, text="📂 Ouvrir CSV", command=self.ouvrir_fichier,
                                      bg='#4a90d9', fg='white', font=('Helvetica', 10, 'bold'))
         self.btn_ouvrir.pack(side='left', padx=5)
+        
+        # Bouton exporter waterfall
+        self.btn_export = tk.Button(top, text="🖼️ Exporter", command=self.exporter_waterfall,
+                                     bg='#9a4ad9', fg='white', font=('Helvetica', 10, 'bold'),
+                                     state='disabled')
+        self.btn_export.pack(side='left', padx=5)
         
         # Label fichier
         self.lbl_fichier = tk.Label(top, text="Aucun fichier chargé", 
@@ -208,6 +216,9 @@ class CSVReader:
         self.ax_spec.set_ylabel("dBm", color='white', fontsize=9)
         self.ax_spec.grid(True, alpha=0.2, color='#4444aa')
         
+        # Formater axe X pour afficher fréquence centrale complète
+        self.ax_spec.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.6f}'))
+        
         # === Waterfall ===
         self.ax_wf.set_facecolor('#0a0a1a')
         self.ax_wf.tick_params(colors='white', labelsize=8)
@@ -220,6 +231,13 @@ class CSVReader:
                                                PROFONDEUR_WATERFALL, 0])
         self.ax_wf.set_xlabel("Fréquence (MHz)", color='white', fontsize=9)
         self.ax_wf.set_ylabel("Temps", color='white', fontsize=9)
+        
+        # Formater axe X pour afficher fréquence centrale complète
+        self.ax_wf.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.6f}'))
+        
+        # Configurer axe Y pour afficher les timestamps
+        self.ax_wf.yaxis.set_major_locator(plt.MaxNLocator(6))
+        self.ax_wf.yaxis.set_major_formatter(FuncFormatter(self.format_wf_time))
         
         # Canvas Tkinter
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame_graph)
@@ -309,6 +327,7 @@ class CSVReader:
             
             # Reset waterfall
             self.waterfall = np.full((PROFONDEUR_WATERFALL, self.largeur_spectre), -160.0)
+            self.waterfall_times = [''] * PROFONDEUR_WATERFALL
             
             # Mettre à jour axes avec la première ligne
             self.maj_axe_freq()
@@ -329,6 +348,7 @@ class CSVReader:
         self.btn_avancer.config(state='normal')
         self.btn_fin.config(state='normal')
         self.slider_pos.config(state='normal')
+        self.btn_export.config(state='normal')
     
     def maj_axe_freq(self):
         """Met à jour l'axe des fréquences."""
@@ -370,6 +390,8 @@ class CSVReader:
         
         # Mettre à jour waterfall (scroll down)
         self.waterfall = np.roll(self.waterfall, 1, axis=0)
+        self.waterfall_times = [''] + self.waterfall_times[:-1]  # Scroll timestamps
+        self.waterfall_times[0] = timestamp  # Nouveau timestamp en haut
         
         # Redimensionner si nécessaire
         if len(spectre) != self.largeur_spectre:
@@ -445,6 +467,7 @@ class CSVReader:
         self.slider_pos.set(0)
         # Reset waterfall
         self.waterfall = np.full((PROFONDEUR_WATERFALL, self.largeur_spectre), -160.0)
+        self.waterfall_times = [''] * PROFONDEUR_WATERFALL
     
     def aller_fin(self):
         """Va à la fin du fichier."""
@@ -464,10 +487,23 @@ class CSVReader:
         self.slider_pos.set(new_idx)
         # Reset waterfall pour reculer proprement
         self.waterfall = np.full((PROFONDEUR_WATERFALL, self.largeur_spectre), -160.0)
+        self.waterfall_times = [''] * PROFONDEUR_WATERFALL
     
     # ========================
     # Callbacks
     # ========================
+    
+    def format_wf_time(self, y, pos):
+        """Formate l'axe Y du waterfall avec les timestamps."""
+        idx = int(y)
+        if 0 <= idx < len(self.waterfall_times) and self.waterfall_times[idx]:
+            # Extraire juste HH:MM:SS.mmm du timestamp
+            ts = self.waterfall_times[idx]
+            # Format attendu: HH:MM:SS.ffffff ou similaire
+            if len(ts) >= 8:
+                return ts[-12:]  # Retourne les derniers caractères (temps)
+            return ts
+        return ''
     
     def on_slider_pos(self, val):
         """Callback changement position."""
@@ -478,6 +514,7 @@ class CSVReader:
         if idx != self.index_courant:
             # Reset waterfall quand on saute
             self.waterfall = np.full((PROFONDEUR_WATERFALL, self.largeur_spectre), -160.0)
+            self.waterfall_times = [''] * PROFONDEUR_WATERFALL
             self.afficher_ligne(idx)
     
     def on_slider_dbm(self, val):
@@ -497,6 +534,94 @@ class CSVReader:
         """Callback changement vitesse."""
         txt = self.combo_vitesse.get()
         self.vitesse = float(txt.replace('x', ''))
+    
+    def exporter_waterfall(self):
+        """Exporte le graphique waterfall COMPLET (toutes les lignes du CSV) en image PNG."""
+        if self.nb_lignes == 0:
+            messagebox.showwarning("Export", "Aucune donnée à exporter")
+            return
+        
+        # Générer nom de fichier par défaut
+        if self.fichier_charge:
+            base_name = os.path.splitext(os.path.basename(self.fichier_charge))[0]
+        else:
+            base_name = "waterfall"
+        
+        ts = datetime.now().strftime('%H%M%S')
+        default_name = f"{base_name}_export_{ts}.png"
+        
+        # Dialogue de sauvegarde
+        fichier = filedialog.asksaveasfilename(
+            title="Exporter le waterfall",
+            initialfile=default_name,
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("PDF", "*.pdf"), ("Tous les fichiers", "*.*")]
+        )
+        
+        if not fichier:
+            return
+        
+        try:
+            # Construire le waterfall COMPLET avec TOUTES les lignes du CSV
+            waterfall_complet = np.zeros((self.nb_lignes, self.largeur_spectre))
+            
+            for i, data in enumerate(self.donnees):
+                spectre = data['spectre']
+                if len(spectre) != self.largeur_spectre:
+                    spectre = np.interp(
+                        np.linspace(0, 1, self.largeur_spectre),
+                        np.linspace(0, 1, len(spectre)),
+                        spectre
+                    )
+                waterfall_complet[i, :] = spectre
+            
+            # Récupérer les infos de fréquence
+            data_first = self.donnees[0]
+            data_last = self.donnees[-1]
+            freq = data_first['freq']
+            span = data_first['span']
+            timestamp_debut = data_first['timestamp']
+            timestamp_fin = data_last['timestamp']
+            
+            # Calculer la hauteur de la figure proportionnelle au nombre de lignes
+            # Min 8, max 20 pouces de hauteur
+            hauteur = min(20, max(8, self.nb_lignes / 30))
+            
+            # Créer une figure séparée pour l'export
+            fig_export, ax_export = plt.subplots(figsize=(14, hauteur), facecolor='#1a1a2e')
+            ax_export.set_facecolor('#0a0a1a')
+            
+            # Dessiner le waterfall COMPLET 
+            # origin='lower' + extent inversé: ligne 0 (début) en bas, dernière ligne en haut
+            im = ax_export.imshow(waterfall_complet, aspect='auto', cmap=WF_CMAP,
+                                   vmin=self.dbm_min, vmax=self.dbm_max,
+                                   extent=[self.axe_freq[0], self.axe_freq[-1], 
+                                          0, self.nb_lignes],
+                                   origin='lower')
+            
+            # Colorbar
+            cbar = fig_export.colorbar(im, ax=ax_export, label='dBm')
+            cbar.ax.yaxis.label.set_color('white')
+            cbar.ax.tick_params(colors='white')
+            
+            # Labels et titre
+            ax_export.set_xlabel('Fréquence (MHz)', color='white', fontsize=11)
+            ax_export.set_ylabel(f'Temps ({self.nb_lignes} lignes)', color='white', fontsize=11)
+            ax_export.set_title(f'Waterfall COMPLET - {freq:.6f} MHz\n{timestamp_debut} → {timestamp_fin}', 
+                               color='white', fontsize=12)
+            ax_export.tick_params(colors='white')
+            ax_export.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.6f}'))
+            
+            # Sauvegarder
+            fig_export.savefig(fichier, dpi=150, facecolor='#1a1a2e', edgecolor='none',
+                               bbox_inches='tight')
+            plt.close(fig_export)
+            
+            messagebox.showinfo("Export", f"Waterfall COMPLET exporté ({self.nb_lignes} lignes):\n{fichier}")
+            print(f"[EXPORT] Waterfall complet sauvegardé: {fichier} ({self.nb_lignes} lignes)")
+            
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Erreur lors de l'export:\n{e}")
 
 
 # ============================================================

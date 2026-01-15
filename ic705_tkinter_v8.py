@@ -30,6 +30,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.ticker import FuncFormatter
 
 
 # ============================================================
@@ -415,6 +416,9 @@ class IC705SpectrumV8:
         self.ax_spec.tick_params(colors='white')
         self.ax_spec.grid(True, alpha=0.3)
         
+        # Formater axe X pour afficher fréquence centrale complète
+        self.ax_spec.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.6f}'))
+        
         # Ligne centre
         self.ligne_centre = self.ax_spec.axvline(x=self.freq_centrale, color='red',
                                                    linestyle='--', alpha=0.7)
@@ -428,6 +432,9 @@ class IC705SpectrumV8:
         self.ax_wf.set_xlabel('Fréquence (MHz)', color='white')
         self.ax_wf.set_ylabel('Temps', color='white')
         self.ax_wf.tick_params(colors='white')
+        
+        # Formater axe X pour afficher fréquence centrale complète
+        self.ax_wf.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:.6f}'))
         
         self.img_wf = self.ax_wf.imshow(
             self.waterfall, aspect='auto', cmap=WF_CMAP,
