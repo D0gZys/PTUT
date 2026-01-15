@@ -43,7 +43,7 @@ ADRESSE_PC = 0xE0
 
 # Paramètres spectre
 FREQUENCE_DEFAUT = 7.100
-SPAN_KHZ = 200
+SPAN_KHZ = 5            # Span 2.5 kHz pour détection météores (haute résolution)
 LARGEUR_SPECTRE = 475  # Points du spectre (optimisé pour les données IC-705)
 PROFONDEUR_WATERFALL = 100
 
@@ -58,8 +58,8 @@ DBM_MIN_DEFAULT = -160     # Min affichage (dBm) - plancher bruit
 DBM_MAX_DEFAULT = -80      # Max affichage (dBm) - pour voir les échos météores
 
 # Trigger
-TRIGGER_PRE_LINES = 5
-TRIGGER_POST_LINES = 5
+TRIGGER_PRE_LINES = 200    # Lignes enregistrées AVANT le déclenchement
+TRIGGER_POST_LINES = 200   # Lignes enregistrées APRÈS le déclenchement
 
 # CSV
 DOSSIER_CSV = "recep_csv"
@@ -258,6 +258,7 @@ class IC705SpectrumV8:
         self.seuil_trigger = -130  # dBm (juste au-dessus du plancher bruit -160)
         self.au_dessus = False
         self.nb_triggers = 0
+        self.trigger_max_dbm = -999  # Puissance max mesurée pendant ce trigger
         self.pre_buffer = deque(maxlen=TRIGGER_PRE_LINES)
         self.post_restantes = 0
         
@@ -842,13 +843,26 @@ class IC705SpectrumV8:
         self.btn_rec.config(text="⏺ REC", bg='SystemButtonFace')
         self.lbl_rec.config(text="")
     
+    def get_dossier_jour(self):
+        """Retourne le chemin du dossier du jour, le crée si nécessaire."""
+        date_jour = datetime.now().strftime('%Y%m%d')
+        dossier = os.path.join(DOSSIER_CSV, date_jour)
+        if not os.path.exists(dossier):
+            os.makedirs(dossier)
+            print(f"[CSV] Dossier créé: {dossier}")
+        return dossier
+    
     def creer_csv(self):
-        if not os.path.exists(DOSSIER_CSV):
-            os.makedirs(DOSSIER_CSV)
+        dossier = self.get_dossier_jour()
         
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        prefix = "trigger" if self.trigger_flag else "spectre"
-        self.nom_csv = os.path.join(DOSSIER_CSV, f"{prefix}_{ts}.csv")
+        ts = datetime.now().strftime('%H%M%S')
+        
+        if self.trigger_flag:
+            # Nom temporaire pour trigger - sera renommé à la fermeture avec la puissance max
+            self.trigger_max_dbm = -999  # Reset du max
+            self.nom_csv = os.path.join(dossier, f"trigger_{int(self.seuil_trigger)}dBm_{ts}_TEMP.csv")
+        else:
+            self.nom_csv = os.path.join(dossier, f"spectre_{ts}.csv")
         
         self.fichier_csv = open(self.nom_csv, 'w', newline='')
         self.writer_csv = csv.writer(self.fichier_csv)
@@ -858,6 +872,7 @@ class IC705SpectrumV8:
         header.extend([f'dbm_{i}' for i in range(LARGEUR_SPECTRE)])
         self.writer_csv.writerow(header)
         self.lignes_csv = 0
+        print(f"[CSV] Fichier créé: {self.nom_csv}")
     
     def fermer_csv(self):
         if self.fichier_csv:
@@ -865,6 +880,17 @@ class IC705SpectrumV8:
                 self.fichier_csv.close()
             except:
                 pass
+            
+            # Renommer le fichier trigger avec la puissance max mesurée
+            if self.trigger_flag and self.nom_csv and '_TEMP.csv' in self.nom_csv:
+                try:
+                    nouveau_nom = self.nom_csv.replace('_TEMP.csv', f'_max{int(self.trigger_max_dbm)}dBm.csv')
+                    os.rename(self.nom_csv, nouveau_nom)
+                    print(f"[CSV] Trigger renommé: {os.path.basename(nouveau_nom)}")
+                    self.nom_csv = nouveau_nom
+                except Exception as e:
+                    print(f"[CSV] Erreur renommage: {e}")
+            
             self.fichier_csv = None
             self.writer_csv = None
     
@@ -882,13 +908,21 @@ class IC705SpectrumV8:
                         # Flush pre-buffer
                         for ts, freq, ref, spec in self.pre_buffer:
                             self.ecrire_csv(spec, ts, freq, ref)
+                            # Mettre à jour le max avec les données du pre-buffer
+                            buf_max = np.max(spec)
+                            if buf_max > self.trigger_max_dbm:
+                                self.trigger_max_dbm = buf_max
                         self.pre_buffer.clear()
                 
                 self.post_restantes = TRIGGER_POST_LINES
                 
+                # Mettre à jour le max du trigger
+                if max_signal > self.trigger_max_dbm:
+                    self.trigger_max_dbm = max_signal
+                
                 if self.writer_csv:
                     self.ecrire_csv(spectre, timestamp, self.freq_centrale, self.ref_level)
-                    self.lbl_rec.config(text=f"⏺ TRIGGER #{self.nb_triggers}: {self.lignes_csv} lignes")
+                    self.lbl_rec.config(text=f"⏺ TRIGGER #{self.nb_triggers}: {self.lignes_csv} lignes | Max: {self.trigger_max_dbm:.1f} dBm")
             else:
                 if self.au_dessus:
                     self.au_dessus = False
