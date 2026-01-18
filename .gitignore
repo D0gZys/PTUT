@@ -37,8 +37,6 @@ wheels/
 .LSOverride
 
 # Données générées
-csv/
-*.csv
 *.log
 
 # Fichiers temporaires
