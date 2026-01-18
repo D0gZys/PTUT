@@ -1,0 +1,128 @@
+#include "waterfall_model.h"
+
+#include <QtGlobal>
+#include <cstring>
+
+namespace {
+constexpr int kWaterfallWidth = 575;
+constexpr int kWaterfallHeight = 200;
+
+struct ColorStop {
+    float pos;
+    QRgb color;
+};
+
+constexpr ColorStop kStops[] = {
+    {0.00f, qRgb(0, 0, 0)},
+    {0.15f, qRgb(0, 0, 128)},
+    {0.35f, qRgb(0, 255, 255)},
+    {0.55f, qRgb(0, 255, 0)},
+    {0.70f, qRgb(255, 255, 0)},
+    {0.85f, qRgb(255, 128, 0)},
+    {0.95f, qRgb(255, 0, 0)},
+    {1.00f, qRgb(255, 255, 255)}
+};
+
+QRgb lerpColor(QRgb a, QRgb b, float t) {
+    const int r = qRed(a) + static_cast<int>((qRed(b) - qRed(a)) * t);
+    const int g = qGreen(a) + static_cast<int>((qGreen(b) - qGreen(a)) * t);
+    const int bch = qBlue(a) + static_cast<int>((qBlue(b) - qBlue(a)) * t);
+    return qRgb(r, g, bch);
+}
+
+QVector<float> resampleLine(const QVector<float> &input, int targetSize) {
+    if (input.isEmpty() || targetSize <= 0) {
+        return QVector<float>();
+    }
+    if (input.size() == targetSize) {
+        return input;
+    }
+    QVector<float> out(targetSize, 0.0f);
+    const int inSize = input.size();
+    for (int i = 0; i < targetSize; ++i) {
+        const float pos = (inSize - 1) * (static_cast<float>(i) / (targetSize - 1));
+        const int idx = static_cast<int>(pos);
+        const int idx2 = qMin(idx + 1, inSize - 1);
+        const float t = pos - idx;
+        out[i] = input[idx] * (1.0f - t) + input[idx2] * t;
+    }
+    return out;
+}
+}
+
+WaterfallModel::WaterfallModel(QObject *parent)
+    : QObject(parent),
+      m_image(kWaterfallWidth, kWaterfallHeight, QImage::Format_ARGB32),
+      m_width(kWaterfallWidth),
+      m_height(kWaterfallHeight),
+      m_dbmMin(-160.0f),
+      m_dbmMax(-80.0f) {
+    m_image.fill(qRgb(0, 0, 0));
+}
+
+const QImage &WaterfallModel::image() const {
+    return m_image;
+}
+
+int WaterfallModel::width() const {
+    return m_width;
+}
+
+int WaterfallModel::height() const {
+    return m_height;
+}
+
+float WaterfallModel::dbmMin() const {
+    return m_dbmMin;
+}
+
+float WaterfallModel::dbmMax() const {
+    return m_dbmMax;
+}
+
+void WaterfallModel::clear() {
+    m_image.fill(qRgb(0, 0, 0));
+    emit imageChanged();
+}
+
+void WaterfallModel::pushLine(const QVector<float> &samples) {
+    if (samples.isEmpty() || m_image.isNull()) {
+        return;
+    }
+
+    QVector<float> line = resampleLine(samples, m_width);
+
+    const int rowBytes = m_image.bytesPerLine();
+    uchar *bits = m_image.bits();
+    std::memmove(bits + rowBytes, bits, rowBytes * (m_height - 1));
+
+    QRgb *row = reinterpret_cast<QRgb *>(bits);
+    const float range = (m_dbmMax - m_dbmMin) > 0.001f ? (m_dbmMax - m_dbmMin) : 1.0f;
+
+    for (int x = 0; x < m_width; ++x) {
+        float t = (line[x] - m_dbmMin) / range;
+        row[x] = mapColor(t);
+    }
+
+    emit imageChanged();
+}
+
+QRgb WaterfallModel::mapColor(float value) const {
+    float t = value;
+    if (t < 0.0f) {
+        t = 0.0f;
+    } else if (t > 1.0f) {
+        t = 1.0f;
+    }
+
+    const int count = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
+    for (int i = 0; i < count - 1; ++i) {
+        if (t <= kStops[i + 1].pos) {
+            const float span = kStops[i + 1].pos - kStops[i].pos;
+            const float local = (span > 0.0f) ? ((t - kStops[i].pos) / span) : 0.0f;
+            return lerpColor(kStops[i].color, kStops[i + 1].color, local);
+        }
+    }
+
+    return kStops[count - 1].color;
+}

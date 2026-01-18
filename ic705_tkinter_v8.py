@@ -31,6 +31,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.ticker import FuncFormatter
+from matplotlib.colors import LinearSegmentedColormap
 
 
 # ============================================================
@@ -65,8 +66,20 @@ TRIGGER_POST_LINES = 200   # Lignes enregistrées APRÈS le déclenchement
 # CSV
 DOSSIER_CSV = "recep_csv"
 
-# Waterfall colormap
-WF_CMAP = "inferno"
+# Waterfall colormap - style wfview
+# Créer une colormap personnalisée : noir -> bleu -> cyan -> vert -> jaune -> orange -> rouge -> blanc
+wfview_colors = [
+    (0.00, '#000000'),  # Noir (signaux très faibles)
+    (0.15, '#000080'),  # Bleu foncé
+    (0.35, '#00FFFF'),  # Cyan
+    (0.55, '#00FF00'),  # Vert
+    (0.70, '#FFFF00'),  # Jaune
+    (0.85, '#FF8000'),  # Orange
+    (0.95, '#FF0000'),  # Rouge
+    (1.00, '#FFFFFF')   # Blanc (signaux extrêmes)
+]
+WF_CMAP = LinearSegmentedColormap.from_list('wfview', 
+                                             [color for _, color in wfview_colors])
 
 # Protocole CI-V
 CIV_PREAMBLE = bytes([0xFE, 0xFE])

@@ -26,6 +26,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.ticker import FuncFormatter
+from matplotlib.colors import LinearSegmentedColormap
 
 # ============================================================
 #              PARAMÈTRES
@@ -33,7 +34,21 @@ from matplotlib.ticker import FuncFormatter
 
 LARGEUR_SPECTRE = 475
 PROFONDEUR_WATERFALL = 200
-WF_CMAP = "inferno"
+
+# Waterfall colormap - style wfview
+# Créer une colormap personnalisée : noir -> bleu -> cyan -> vert -> jaune -> orange -> rouge -> blanc
+wfview_colors = [
+    (0.00, '#000000'),  # Noir (signaux très faibles)
+    (0.15, '#000080'),  # Bleu foncé
+    (0.35, '#00FFFF'),  # Cyan
+    (0.55, '#00FF00'),  # Vert
+    (0.70, '#FFFF00'),  # Jaune
+    (0.85, '#FF8000'),  # Orange
+    (0.95, '#FF0000'),  # Rouge
+    (1.00, '#FFFFFF')   # Blanc (signaux extrêmes)
+]
+WF_CMAP = LinearSegmentedColormap.from_list('wfview', 
+                                             [color for _, color in wfview_colors])
 
 DBM_MIN_DEFAULT = -160
 DBM_MAX_DEFAULT = -80
@@ -61,6 +76,12 @@ class CSVReader:
         # Waterfall buffer
         self.waterfall = np.full((PROFONDEUR_WATERFALL, LARGEUR_SPECTRE), -160.0)
         self.waterfall_times = [''] * PROFONDEUR_WATERFALL  # Buffer des timestamps
+        
+        # Marqueurs sur waterfall (liste pour plusieurs marqueurs)
+        self.markers_freq = []       # Lignes verticales fréquence
+        self.markers_time = []       # Lignes horizontales temps
+        self.markers_text = []       # Textes info
+        self.marker_enabled = True   # Activer/désactiver marqueurs
         
         # Paramètres affichage
         self.dbm_min = DBM_MIN_DEFAULT
@@ -95,6 +116,16 @@ class CSVReader:
                                      bg='#9a4ad9', fg='white', font=('Helvetica', 10, 'bold'),
                                      state='disabled')
         self.btn_export.pack(side='left', padx=5)
+        
+        # Bouton marqueurs
+        self.btn_markers = tk.Button(top, text="📍 Marqueurs ON", command=self.toggle_markers,
+                                      bg='#4ad99a', fg='white', font=('Helvetica', 10, 'bold'))
+        self.btn_markers.pack(side='left', padx=5)
+        
+        # Bouton effacer marqueurs
+        self.btn_clear_markers = tk.Button(top, text="🗑️ Effacer", command=self.clear_markers,
+                                            bg='#d9594a', fg='white', font=('Helvetica', 10, 'bold'))
+        self.btn_clear_markers.pack(side='left', padx=5)
         
         # Label fichier
         self.lbl_fichier = tk.Label(top, text="Aucun fichier chargé", 
@@ -243,6 +274,119 @@ class CSVReader:
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame_graph)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill='both', expand=True)
+        
+        # Connecter événement clic souris sur waterfall
+        self.canvas.mpl_connect('button_press_event', self.on_waterfall_click)
+    
+    # ========================
+    # Marqueurs waterfall
+    # ========================
+    
+    def on_waterfall_click(self, event):
+        """Gère le clic sur le waterfall pour afficher les marqueurs."""
+        # Vérifier que le clic est sur l'axe waterfall
+        if event.inaxes != self.ax_wf or not self.marker_enabled:
+            return
+        
+        # Coordonnées du clic
+        freq_clicked = event.xdata
+        time_idx = event.ydata
+        
+        if freq_clicked is None or time_idx is None:
+            return
+        
+        # Trouver l'index dans le waterfall
+        time_idx = int(np.clip(time_idx, 0, PROFONDEUR_WATERFALL - 1))
+        
+        # Trouver l'index de fréquence le plus proche
+        freq_idx = np.argmin(np.abs(self.axe_freq - freq_clicked))
+        
+        # Récupérer la valeur dBm
+        dbm_value = self.waterfall[time_idx, freq_idx]
+        
+        # Récupérer le timestamp
+        timestamp = self.waterfall_times[time_idx] if time_idx < len(self.waterfall_times) else "N/A"
+        
+        # Dessiner marqueur vertical (fréquence)
+        marker_freq = self.ax_wf.axvline(x=freq_clicked, color='yellow', 
+                                          linestyle='--', linewidth=1.5, alpha=0.8)
+        self.markers_freq.append(marker_freq)
+        
+        # Dessiner marqueur horizontal (temps)
+        marker_time = self.ax_wf.axhline(y=time_idx, color='cyan', 
+                                          linestyle='--', linewidth=1.5, alpha=0.8)
+        self.markers_time.append(marker_time)
+        
+        # Afficher texte avec info
+        info_text = f"F: {freq_clicked:.6f} MHz\nT: {timestamp}\nP: {dbm_value:.1f} dBm"
+        
+        # Positionner le texte à côté du point (à droite et en dessous)
+        # Décalage pour éviter que le texte soit au-dessus du point cliqué
+        x_offset = (self.axe_freq[-1] - self.axe_freq[0]) * 0.02  # 2% de la plage
+        y_offset = PROFONDEUR_WATERFALL * 0.05  # 5% de la hauteur
+        
+        x_pos = freq_clicked + x_offset
+        y_pos = time_idx + y_offset
+        
+        # S'assurer que le texte reste dans les limites
+        if x_pos > self.axe_freq[-1] - x_offset * 3:
+            x_pos = freq_clicked - x_offset
+            ha = 'right'
+        else:
+            ha = 'left'
+        
+        if y_pos > PROFONDEUR_WATERFALL - 15:
+            y_pos = time_idx - y_offset
+            va = 'top'
+        else:
+            va = 'bottom'
+        
+        marker_text = self.ax_wf.text(x_pos, y_pos, info_text,
+                                      bbox=dict(boxstyle='round,pad=0.5', 
+                                               facecolor='black', 
+                                               edgecolor='yellow',
+                                               alpha=0.8),
+                                      color='white',
+                                      fontsize=8,
+                                      ha=ha,
+                                      va=va)
+        self.markers_text.append(marker_text)
+        
+        # Rafraîchir
+        self.canvas.draw_idle()
+    
+    def toggle_markers(self):
+        """Active/désactive les marqueurs sur le waterfall."""
+        self.marker_enabled = not self.marker_enabled
+        
+        if self.marker_enabled:
+            self.btn_markers.config(text="📍 Marqueurs ON", bg='#4ad99a')
+        else:
+            self.btn_markers.config(text="📍 Marqueurs OFF", bg='#666666')
+            # Effacer tous les marqueurs existants
+            for marker in self.markers_freq:
+                marker.remove()
+            for marker in self.markers_time:
+                marker.remove()
+            for marker in self.markers_text:
+                marker.remove()
+            self.markers_freq.clear()
+            self.markers_time.clear()
+            self.markers_text.clear()
+            self.canvas.draw_idle()
+    
+    def clear_markers(self):
+        """Efface tous les marqueurs."""
+        for marker in self.markers_freq:
+            marker.remove()
+        for marker in self.markers_time:
+            marker.remove()
+        for marker in self.markers_text:
+            marker.remove()
+        self.markers_freq.clear()
+        self.markers_time.clear()
+        self.markers_text.clear()
+        self.canvas.draw_idle()
     
     # ========================
     # Gestion fichier
