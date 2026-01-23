@@ -4,23 +4,18 @@
 #include <cstring>
 
 namespace {
-constexpr int kWaterfallWidth = 575;
+constexpr int kWaterfallWidth = 475;
 constexpr int kWaterfallHeight = 200;
 
-struct ColorStop {
-    float pos;
-    QRgb color;
-};
-
-constexpr ColorStop kStops[] = {
-    {0.00f, qRgb(0, 0, 0)},
-    {0.15f, qRgb(0, 0, 128)},
-    {0.35f, qRgb(0, 255, 255)},
-    {0.55f, qRgb(0, 255, 0)},
-    {0.70f, qRgb(255, 255, 0)},
-    {0.85f, qRgb(255, 128, 0)},
-    {0.95f, qRgb(255, 0, 0)},
-    {1.00f, qRgb(255, 255, 255)}
+constexpr QRgb kColors[] = {
+    qRgb(0, 0, 0),
+    qRgb(0, 0, 128),
+    qRgb(0, 255, 255),
+    qRgb(0, 255, 0),
+    qRgb(255, 255, 0),
+    qRgb(255, 128, 0),
+    qRgb(255, 0, 0),
+    qRgb(255, 255, 255)
 };
 
 QRgb lerpColor(QRgb a, QRgb b, float t) {
@@ -115,14 +110,13 @@ QRgb WaterfallModel::mapColor(float value) const {
         t = 1.0f;
     }
 
-    const int count = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
-    for (int i = 0; i < count - 1; ++i) {
-        if (t <= kStops[i + 1].pos) {
-            const float span = kStops[i + 1].pos - kStops[i].pos;
-            const float local = (span > 0.0f) ? ((t - kStops[i].pos) / span) : 0.0f;
-            return lerpColor(kStops[i].color, kStops[i + 1].color, local);
-        }
+    const int count = static_cast<int>(sizeof(kColors) / sizeof(kColors[0]));
+    if (count <= 1) {
+        return (count == 1) ? kColors[0] : qRgb(0, 0, 0);
     }
 
-    return kStops[count - 1].color;
+    const float scaled = t * float(count - 1);
+    const int idx = qBound(0, int(scaled), count - 2);
+    const float local = scaled - float(idx);
+    return lerpColor(kColors[idx], kColors[idx + 1], local);
 }
