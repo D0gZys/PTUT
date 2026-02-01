@@ -75,6 +75,28 @@ float WaterfallModel::dbmMax() const {
     return m_dbmMax;
 }
 
+void WaterfallModel::setDbmMin(float value) {
+    setDbmRange(value, m_dbmMax);
+}
+
+void WaterfallModel::setDbmMax(float value) {
+    setDbmRange(m_dbmMin, value);
+}
+
+void WaterfallModel::setDbmRange(float minValue, float maxValue) {
+    float min = minValue;
+    float max = maxValue;
+    if (max - min < 1.0f) {
+        max = min + 1.0f;
+    }
+    if (qFuzzyCompare(min, m_dbmMin) && qFuzzyCompare(max, m_dbmMax)) {
+        return;
+    }
+    m_dbmMin = min;
+    m_dbmMax = max;
+    emit rangeChanged();
+}
+
 void WaterfallModel::clear() {
     m_image.fill(qRgb(0, 0, 0));
     emit imageChanged();

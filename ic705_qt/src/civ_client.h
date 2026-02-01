@@ -2,9 +2,10 @@
 
 #include <QObject>
 #include <QByteArray>
-#include <QTcpSocket>
 #include <QTimer>
 #include <QVector>
+
+#include "ic705_client.h"
 
 class CivClient : public QObject {
     Q_OBJECT
@@ -22,6 +23,11 @@ public:
     int refLevel() const;
 
     Q_INVOKABLE void connectToDefault();
+    Q_INVOKABLE void connectWithParams(const QString &ip,
+                                       const QString &username,
+                                       const QString &password,
+                                       const QString &radioName,
+                                       const QString &radioMac);
     Q_INVOKABLE void disconnectFromHost();
 
 signals:
@@ -32,24 +38,18 @@ signals:
     void spectrumReady(const QVector<float> &samples);
 
 private:
-    void onConnected();
-    void onDisconnected();
-    void onReadyRead();
-    void onErrorOccurred(QAbstractSocket::SocketError error);
     void onPollTimeout();
 
     void updateStatus(const QString &text);
     void processMessage(const QByteArray &msg);
-    QList<QByteArray> extractMessages(QByteArray &buffer);
 
     static double decodeFrequencyBcd(const QByteArray &data);
     static int decodeRefLevel(const QByteArray &msg);
     static QVector<float> resample(const QVector<float> &input, int targetSize);
-    static QByteArray buildCivFrame(quint8 cmd, quint8 subCmd = 0x00, const QByteArray &payload = QByteArray());
+    static QByteArray parseMacBytes(const QString &text, bool *ok);
 
-    QTcpSocket m_socket;
+    IC705Client m_client;
     QTimer m_pollTimer;
-    QByteArray m_buffer;
 
     bool m_connected;
     QString m_statusText;

@@ -4,7 +4,7 @@ project(ic705_qt LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2 Network)
 
 qt_standard_project_setup()
 qt_policy(SET QTP0001 NEW)
@@ -22,8 +22,12 @@ qt_add_executable(ic705_qt
     src/waterfall_model.cpp
     src/civ_client.h
     src/civ_client.cpp
+    src/ic705_client.h
+    src/ic705_client.cpp
     src/csv_replay.h
     src/csv_replay.cpp
+    src/csv_recorder.h
+    src/csv_recorder.cpp
 )
 
 add_subdirectory(qml)
@@ -36,4 +40,5 @@ target_link_libraries(ic705_qt
         Qt6::Quick
         Qt6::QuickControls2
         Qt6::QuickDialogs2
+        Qt6::Network
 )

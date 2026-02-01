@@ -1,18 +1,18 @@
 #include "civ_client.h"
 
-#include <QDateTime>
 #include <QtGlobal>
 
 namespace {
-constexpr quint8 kCivPreamble = 0xFE;
-constexpr quint8 kCivEnd = 0xFD;
-constexpr quint8 kAddrRadio = 0xA4;
-constexpr quint8 kAddrPc = 0xE0;
 constexpr int kSpectrumWidth = 475;
 constexpr int kSpectrumDataStart = 19;
 constexpr float kRefLevelDefault = -77.0f;
 constexpr float kRawMax = 160.0f;
 constexpr float kScaleDbPerPoint = 0.5f;
+constexpr const char *kRadioIp = "192.168.59.1";
+constexpr const char *kRadioUser = "IC-705-7";
+constexpr const char *kRadioPass = "bouter20xx";
+constexpr const char *kRadioName = "IC-705-7";
+constexpr const char *kRadioMac = "0090C713CA75";
 
 }
 
@@ -22,12 +22,20 @@ CivClient::CivClient(QObject *parent)
       m_statusText("Disconnected"),
       m_freqMHz(0.0),
       m_refLevel(0) {
-    m_socket.setSocketOption(QAbstractSocket::LowDelayOption, 1);
-
-    connect(&m_socket, &QTcpSocket::connected, this, &CivClient::onConnected);
-    connect(&m_socket, &QTcpSocket::disconnected, this, &CivClient::onDisconnected);
-    connect(&m_socket, &QTcpSocket::readyRead, this, &CivClient::onReadyRead);
-    connect(&m_socket, &QTcpSocket::errorOccurred, this, &CivClient::onErrorOccurred);
+    connect(&m_client, &IC705Client::civFrameReceived, this,
+            [this](const QByteArray &payload) { processMessage(payload); });
+    connect(&m_client, &IC705Client::connectedChanged, this, [this](bool connected) {
+        if (m_connected == connected) {
+            return;
+        }
+        m_connected = connected;
+        emit connectedChanged();
+        if (!connected) {
+            m_pollTimer.stop();
+            updateStatus("Disconnected");
+        }
+    });
+    connect(&m_client, &IC705Client::statusTextChanged, this, &CivClient::updateStatus);
 
     m_pollTimer.setInterval(2000);
     m_pollTimer.setTimerType(Qt::CoarseTimer);
@@ -54,57 +62,85 @@ void CivClient::connectToDefault() {
     if (m_connected) {
         return;
     }
-    updateStatus("Connecting 127.0.0.1:50002...");
-    m_socket.connectToHost(QStringLiteral("127.0.0.1"), 50002);
+    connectWithParams(QString::fromLatin1(kRadioIp),
+                      QString::fromLatin1(kRadioUser),
+                      QString::fromLatin1(kRadioPass),
+                      QString::fromLatin1(kRadioName),
+                      QString::fromLatin1(kRadioMac));
 }
 
-void CivClient::disconnectFromHost() {
-    if (!m_connected && m_socket.state() == QAbstractSocket::UnconnectedState) {
+void CivClient::connectWithParams(const QString &ip,
+                                  const QString &username,
+                                  const QString &password,
+                                  const QString &radioName,
+                                  const QString &radioMac) {
+    if (m_connected) {
         return;
     }
-    m_pollTimer.stop();
-    if (m_socket.state() == QAbstractSocket::ConnectedState) {
-        m_socket.write(buildCivFrame(0x27, 0x10, QByteArray(1, char(0x00))));
+    IC705Client::Params params;
+    params.radioIp = ip.trimmed();
+    params.username = username.trimmed();
+    params.password = password;
+    params.radioName = radioName.trimmed().isEmpty() ? QStringLiteral("IC-705") : radioName.trimmed();
+    bool ok = false;
+    params.radioMac = parseMacBytes(radioMac, &ok);
+    if (!ok) {
+        updateStatus(QStringLiteral("Invalid MAC address."));
+        return;
     }
-    m_socket.disconnectFromHost();
-}
 
-void CivClient::onConnected() {
-    m_connected = true;
-    emit connectedChanged();
-    updateStatus("Connected");
+    if (params.radioIp.isEmpty()) {
+        updateStatus(QStringLiteral("Radio IP missing."));
+        return;
+    }
+    if (params.username.isEmpty() || params.password.isEmpty()) {
+        updateStatus(QStringLiteral("Username/password missing."));
+        return;
+    }
 
-    m_socket.write(buildCivFrame(0x27, 0x10, QByteArray(1, char(0x01))));
-    m_socket.write(buildCivFrame(0x03));
-    m_socket.write(buildCivFrame(0x27, 0x19));
+    updateStatus(QStringLiteral("Connecting %1...").arg(params.radioIp));
+    QString error;
+    if (!m_client.connectToRadio(params, 20000, &error)) {
+        updateStatus(error.isEmpty() ? QStringLiteral("Connection failed") : error);
+        return;
+    }
+
+    QByteArray scopeOn;
+    scopeOn.append(char(0x10));
+    scopeOn.append(char(0x01));
+    m_client.sendCivCmd(0x27, scopeOn);
+    QByteArray scopeDataOn;
+    scopeDataOn.append(char(0x11));
+    scopeDataOn.append(char(0x01));
+    m_client.sendCivCmd(0x27, scopeDataOn);
+    m_client.sendCivCmd(0x03);
+    m_client.sendCivCmd(0x27, QByteArray(1, char(0x19)));
+
     m_pollTimer.start();
 }
 
-void CivClient::onDisconnected() {
-    m_connected = false;
-    emit connectedChanged();
-    updateStatus("Disconnected");
+void CivClient::disconnectFromHost() {
     m_pollTimer.stop();
-}
+    if (m_connected) {
+        QByteArray scopeDataOff;
+        scopeDataOff.append(char(0x11));
+        scopeDataOff.append(char(0x00));
+        m_client.sendCivCmd(0x27, scopeDataOff);
 
-void CivClient::onReadyRead() {
-    m_buffer.append(m_socket.readAll());
-    auto messages = extractMessages(m_buffer);
-    for (const auto &msg : messages) {
-        processMessage(msg);
+        QByteArray scopeOff;
+        scopeOff.append(char(0x10));
+        scopeOff.append(char(0x00));
+        m_client.sendCivCmd(0x27, scopeOff);
     }
-}
-
-void CivClient::onErrorOccurred(QAbstractSocket::SocketError) {
-    updateStatus(QStringLiteral("Socket error: %1").arg(m_socket.errorString()));
+    m_client.close();
 }
 
 void CivClient::onPollTimeout() {
-    if (m_socket.state() != QAbstractSocket::ConnectedState) {
+    if (!m_connected) {
         return;
     }
-    m_socket.write(buildCivFrame(0x03));
-    m_socket.write(buildCivFrame(0x27, 0x19));
+    m_client.sendCivCmd(0x03);
+    m_client.sendCivCmd(0x27, QByteArray(1, char(0x19)));
 }
 
 void CivClient::updateStatus(const QString &text) {
@@ -141,14 +177,24 @@ void CivClient::processMessage(const QByteArray &msg) {
             return;
         }
         if (msg.size() > kSpectrumDataStart + 2) {
-            const int end = msg.size() - 1;
-            if (end <= kSpectrumDataStart) {
+            const QByteArray data = msg.mid(5, msg.size() - 6);
+            const int base = (!data.isEmpty() && quint8(data[0]) == 0x00) ? 1 : 0;
+            const int headerLen = base + 15;
+            int rawOffset = -1;
+            int count = 0;
+            if (data.size() >= headerLen + kSpectrumWidth) {
+                rawOffset = headerLen;
+                count = kSpectrumWidth;
+            } else if (data.size() > (kSpectrumDataStart - 5)) {
+                rawOffset = kSpectrumDataStart - 5;
+                count = data.size() - rawOffset;
+            }
+            if (rawOffset < 0 || count <= 0) {
                 return;
             }
-            const int count = end - kSpectrumDataStart;
             QVector<float> raw(count);
             for (int i = 0; i < count; ++i) {
-                raw[i] = float(quint8(msg[kSpectrumDataStart + i]));
+                raw[i] = float(quint8(data[rawOffset + i]));
             }
 
             QVector<float> dbm(count);
@@ -160,38 +206,6 @@ void CivClient::processMessage(const QByteArray &msg) {
             emit spectrumReady(resized);
         }
     }
-}
-
-QList<QByteArray> CivClient::extractMessages(QByteArray &buffer) {
-    QList<QByteArray> messages;
-    while (true) {
-        int start = buffer.indexOf(char(kCivPreamble));
-        if (start < 0) {
-            buffer.clear();
-            break;
-        }
-        if (start + 1 >= buffer.size()) {
-            if (start > 0) {
-                buffer.remove(0, start);
-            }
-            break;
-        }
-        if (quint8(buffer[start + 1]) != kCivPreamble) {
-            buffer.remove(0, start + 1);
-            continue;
-        }
-        if (start > 0) {
-            buffer.remove(0, start);
-        }
-        int end = buffer.indexOf(char(kCivEnd));
-        if (end < 0) {
-            break;
-        }
-        const QByteArray msg = buffer.left(end + 1);
-        messages.append(msg);
-        buffer.remove(0, end + 1);
-    }
-    return messages;
 }
 
 double CivClient::decodeFrequencyBcd(const QByteArray &data) {
@@ -248,19 +262,38 @@ QVector<float> CivClient::resample(const QVector<float> &input, int targetSize) 
     return out;
 }
 
-QByteArray CivClient::buildCivFrame(quint8 cmd, quint8 subCmd, const QByteArray &payload) {
-    QByteArray frame;
-    frame.append(char(kCivPreamble));
-    frame.append(char(kCivPreamble));
-    frame.append(char(kAddrRadio));
-    frame.append(char(kAddrPc));
-    frame.append(char(cmd));
-    if (subCmd != 0x00) {
-        frame.append(char(subCmd));
+QByteArray CivClient::parseMacBytes(const QString &text, bool *ok) {
+    QString cleaned = text;
+    cleaned.remove(':');
+    cleaned.remove('-');
+    cleaned.remove(' ');
+    if (cleaned.isEmpty()) {
+        if (ok) {
+            *ok = true;
+        }
+        return QByteArray();
     }
-    if (!payload.isEmpty()) {
-        frame.append(payload);
+    if (cleaned.size() != 12) {
+        if (ok) {
+            *ok = false;
+        }
+        return QByteArray();
     }
-    frame.append(char(kCivEnd));
-    return frame;
+    QByteArray out;
+    out.resize(6);
+    for (int i = 0; i < 6; ++i) {
+        bool localOk = false;
+        const int value = cleaned.mid(i * 2, 2).toInt(&localOk, 16);
+        if (!localOk) {
+            if (ok) {
+                *ok = false;
+            }
+            return QByteArray();
+        }
+        out[i] = char(value & 0xFF);
+    }
+    if (ok) {
+        *ok = true;
+    }
+    return out;
 }

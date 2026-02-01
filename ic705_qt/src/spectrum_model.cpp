@@ -29,6 +29,28 @@ float SpectrumModel::dbmMax() const {
     return m_dbmMax;
 }
 
+void SpectrumModel::setDbmMin(float value) {
+    setDbmRange(value, m_dbmMax);
+}
+
+void SpectrumModel::setDbmMax(float value) {
+    setDbmRange(m_dbmMin, value);
+}
+
+void SpectrumModel::setDbmRange(float minValue, float maxValue) {
+    float min = minValue;
+    float max = maxValue;
+    if (max - min < 1.0f) {
+        max = min + 1.0f;
+    }
+    if (qFuzzyCompare(min, m_dbmMin) && qFuzzyCompare(max, m_dbmMax)) {
+        return;
+    }
+    m_dbmMin = min;
+    m_dbmMax = max;
+    emit rangeChanged();
+}
+
 void SpectrumModel::start() {
     if (!m_timer.isActive()) {
         m_timer.start();

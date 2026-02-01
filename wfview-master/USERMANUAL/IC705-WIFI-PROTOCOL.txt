@@ -1,0 +1,407 @@
+﻿Notes protocole Wi‑Fi Icom (IC‑705) — d’après le code source WFview
+===================================================================
+
+But
+---
+Ce document regroupe ce qui a été identifié dans le code WFview pour piloter un
+poste Icom (ex: IC‑705) en Wi‑Fi via UDP + CI‑V encapsulé, afin de pouvoir
+reproduire la pile côté Python (sans passer par WFview).
+
+Important: ceci décrit “ce que fait WFview” dans le code, pas une spec officielle.
+Les champs/valeurs non compris sont signalés “à confirmer”.
+
+
+1) Où est la couche UDP Icom dans WFview ?
+-----------------------------------------
+
+Fichiers principaux (côté client = WFview se connecte au poste) :
+
+- src/radio/icomudphandler.cpp
+  Rôle: orchestrateur “connexion au poste” sur le port contrôle (par défaut 50001),
+        login, token, demande d’ouverture de streams (CI‑V + audio), puis création
+        des objets CI‑V et audio.
+
+- src/radio/icomudpbase.cpp + include/icomudpbase.h
+  Rôle: base commune UDP (socket, myId/remoteId, séquences, retransmissions,
+        ping/idle, suivi des pertes, helpers sendControl/sendTrackedPacket).
+
+- src/radio/icomudpcivdata.cpp + include/icomudpcivdata.h
+  Rôle: stream CI‑V (port CI‑V retourné par le poste), encapsulation CI‑V dans
+        un paquet UDP “data_packet”, watchdog + requête “start CIV data”.
+
+- src/radio/icomudpaudio.cpp (audio réseau)
+  Rôle: stream audio (port audio retourné par le poste), encapsulation audio.
+
+Fichiers utiles (définitions de trames) :
+
+- include/packettypes.h
+  Rôle: tailles de paquets (CONTROL_SIZE, LOGIN_SIZE, …) + structures packées
+        des trames (control_packet, login_packet, conninfo_packet, token_packet,
+        status_packet, ping_packet/data_packet, openclose_packet, audio_packet…).
+
+Fichiers “ports par défaut” :
+
+- src/wfmain.cpp:1827 (valeurs par défaut)
+  controlLANPort = 50001
+  serialLANPort  = 50002  (en pratique: CI‑V stream)
+  audioLANPort   = 50003
+  scopeLANPort   = 50004
+
+
+2) Ports / canaux (ce que WFview fait)
+--------------------------------------
+
+Le poste expose typiquement plusieurs ports UDP, et WFview utilise des “canaux” :
+
+- Port contrôle (par défaut 50001): handshake + login + token + demande de streams
+  Code: icomUdpHandler (src/radio/icomudphandler.cpp)
+
+- Port CI‑V (retourné par le poste après demande de stream): transport CI‑V encapsulé
+  Code: icomUdpCivData (src/radio/icomudpcivdata.cpp)
+
+- Port audio (retourné par le poste après demande de stream): audio encapsulé
+  Code: icomUdpAudio (src/radio/icomudpaudio.cpp)
+
+WFview bind local:
+- contrôle: bind() sur un port local aléatoire (0) via icomUdpBase::init(0)
+  (src/radio/icomudphandler.cpp: init())
+- civ/audio: WFview choisit 2 ports locaux libres (civLocalPort/audioLocalPort)
+  en faisant bind() sur un socket temporaire (src/radio/icomudphandler.cpp:549)
+
+
+3) La “tête commune” des paquets (offsets importants)
+-----------------------------------------------------
+
+Dans include/packettypes.h, beaucoup de paquets partagent le même début:
+
+Offset  Taille  Nom      Commentaire
+0x00    4       len      Longueur totale (souvent en little-endian “naturel”)
+0x04    2       type     Type “UDP/Icom”. Souvent 0x0000 pour les paquets “payload”
+0x06    2       seq      Séquence “externe” (rétransmissions). WFview l’écrit en little-endian.
+0x08    4       sentid   Identifiant “moi”
+0x0C    4       rcvdid   Identifiant “radio”
+
+Important:
+- La séquence externe (seq à 0x06) est gérée par icomUdpBase::sendTrackedPacket()
+  (src/radio/icomudpbase.cpp:435) qui force:
+    d[6] = sendSeq & 0xff
+    d[7] = (sendSeq >> 8) & 0xff
+
+- Beaucoup de paquets “login/token/conninfo/…” ne remplissent pas “type” (restent 0),
+  mais sont “trackés” via seq, ce qui active le mécanisme de retransmission.
+
+
+4) Identifiants myId / remoteId
+-------------------------------
+
+myId est construit à l’init UDP (src/radio/icomudpbase.cpp: init()):
+- WFview calcule un identifiant 32-bit basé sur l’IP locale IPv4 + le port local UDP:
+    myId = (addr >> 8 & 0xff) << 24 | (addr & 0xff) << 16 | (localPort & 0xffff);
+  (log: “UDP Stream bound to local port …”)
+  Code: src/radio/icomudpbase.cpp:18
+
+remoteId:
+- côté client, remoteId est appris depuis les paquets reçus (sentid de l’autre côté),
+  notamment lors du handshake “I am here”.
+  Exemple: icomUdpBase::dataReceived() sur control packet type 0x04
+  (src/radio/icomudpbase.cpp:77).
+
+
+5) Timers / keep-alive (valeurs)
+--------------------------------
+
+Définitions globales (include/packettypes.h):
+- PING_PERIOD        = 500 ms
+- IDLE_PERIOD        = 100 ms
+- AREYOUTHERE_PERIOD = 500 ms
+- RETRANSMIT_PERIOD  = 100 ms
+- WATCHDOG_PERIOD    = 500 ms
+- TOKEN_RENEWAL      = 60000 ms
+
+Mécanismes:
+- Are-you-there: envoie périodiquement un control packet type 0x03 jusqu’à réponse.
+  - icomUdpHandler::init(): areYouThereTimer -> sendControl(false, 0x03, 0)
+    (src/radio/icomudphandler.cpp: init())
+  - icomUdpCivData fait pareil sur le stream civ (src/radio/icomudpcivdata.cpp: ctor)
+
+- Idle: keepalive en envoyant des paquets “control” trackés type 0x00
+  - icomUdpHandler::init(): idleTimer -> sendControl(true, 0, 0)
+    (src/radio/icomudphandler.cpp: init())
+  - icomUdpCivData: idleTimer -> sendControl(true, 0, 0)
+
+- Ping: ping_packet type 0x07 (PING_SIZE=0x15)
+  - émis par icomUdpBase::sendPing() (src/radio/icomudpbase.cpp:416)
+  - réponse automatique si on reçoit un ping “request” (reply==0x00) dans icomUdpBase::dataReceived()
+    (src/radio/icomudpbase.cpp: case PING_SIZE)
+
+
+6) Retransmission / fiabilité (UDP “semi-fiable”)
+-------------------------------------------------
+
+WFview implémente un mécanisme de retransmission basé sur seq (offset 0x06).
+
+En émission:
+- sendTrackedPacket() stocke chaque paquet envoyé dans txSeqBuf (buffer circulaire BUFSIZE)
+  et incrémente sendSeq (src/radio/icomudpbase.cpp:435).
+
+En réception:
+- icomUdpBase::dataReceived() maintient rxSeqBuf + rxMissing pour détecter des trous
+  et déclencher des demandes de retransmission (src/radio/icomudpbase.cpp:231..306).
+  Il interprète le paquet reçu comme control_packet_t pour lire “seq”.
+
+Demande de retransmission (client -> radio):
+- icomUdpBase::sendRetransmitRequest() (src/radio/icomudpbase.cpp:310)
+  - construit un control_packet type = 0x01
+  - si 1 seul seq manquant: envoie un CONTROL_SIZE avec p.seq = seq manquant
+  - sinon: envoie un paquet variable: header CONTROL_SIZE + liste de seq (2 octets) ajoutée.
+    Note: WFview duplique chaque seq 2 fois dans missingSeqs (à confirmer pourquoi)
+    (src/radio/icomudpbase.cpp:339..343).
+
+Retransmit request (radio -> client):
+- icomUdpBase::dataReceived() gère:
+  - type==0x01 && len==0x10: demande “single packet” via in->seq
+  - type==0x01 && len!=0x10: demande “multiple packets” (liste à partir de 0x10)
+  Et renvoie match->data depuis txSeqBuf via udp->writeDatagram()
+  (src/radio/icomudpbase.cpp: case CONTROL_SIZE + bloc “variable length retransmit request”)
+
+
+6bis) Fermeture de session (disconnect)
+---------------------------------------
+
+Quand l’objet UDP est détruit, WFview envoie un “disconnect” côté contrôle:
+- icomUdpBase::~icomUdpBase() appelle sendControl(false, 0x05, 0x00)
+  (src/radio/icomudpbase.cpp:31)
+
+
+7) Authentification: encodage username/password (“passcode”)
+------------------------------------------------------------
+
+WFview n’envoie pas username/password en ASCII brut.
+Il applique une fonction de transformation “passcode”:
+
+- include/icomudpbase.h:188 (static inline void passcode(QString in, QByteArray& out))
+  Pour chaque caractère i (max 16):
+  - p = ascii[i] + i
+  - si p > 126: p = 32 + p % 127
+  - out.append(sequence[p]) avec une table “sequence[]” (256 entrées)
+
+Résultat:
+- username/password encodés sur 16 octets (remplis partiellement selon longueur).
+
+Ce point est critique à reproduire à l’identique en Python.
+
+
+8) Handshake / séquence logique (ce que WFview fait sur le contrôle)
+--------------------------------------------------------------------
+
+Les messages de base utilisent des control_packet (CONTROL_SIZE=0x10).
+
+Types observés:
+- 0x03: “Are you there” (émis périodiquement par WFview)
+- 0x04: “I am here” (reçu depuis la radio)
+- 0x06: “ready” (étape suivante; WFview le traite comme déclencheur du login)
+
+Séquence côté contrôle (résumé pratique):
+1) Bind UDP local aléatoire
+   icomUdpBase::init(0) (src/radio/icomudphandler.cpp: init())
+2) Start areYouThereTimer -> envoi type 0x03 vers port contrôle (50001)
+3) Réception type 0x04:
+   - icomUdpHandler arrête areYouThereTimer et démarre pingTimer + idleTimer
+     (src/radio/icomudphandler.cpp:214..223)
+   - icomUdpBase::dataReceived() met à jour remoteId = in->sentid et envoie un control type 0x06
+     (src/radio/icomudpbase.cpp:77 et src/radio/icomudpbase.cpp:85)
+4) Réception type 0x06:
+   - icomUdpHandler::dataReceived() appelle sendLogin()
+     (src/radio/icomudphandler.cpp:225..230)
+
+Remarque: le sens exact de 0x06 (“are you ready” vs “i am ready”) n’est pas explicitement
+spécifié; l’important est de reproduire la séquence qui marche dans WFview.
+
+
+9) Login packet (LOGIN_SIZE=0x80)
+---------------------------------
+
+Construction (src/radio/icomudphandler.cpp:637..665):
+- tokRequest = rand() (quint16) pour corréler la réponse
+- username/password encodés via passcode()
+- Remplit login_packet:
+  - len = sizeof(login_packet)
+  - sentid = myId
+  - rcvdid = remoteId
+  - payloadsize = big-endian(sizeof(p) - 0x10)
+  - requesttype = 0x00
+  - requestreply = 0x01
+  - innerseq = big-endian(authSeq++)
+  - tokrequest = tokRequest
+  - username[16], password[16], name[16] (compName, ex: “XXXX-wfview”)
+- Envoi via sendTrackedPacket() (donc seq externe + buffering retransmit)
+
+Réponse (LOGIN_RESPONSE_SIZE=0x60):
+- Traité dans icomUdpHandler::dataReceived()
+  (src/radio/icomudphandler.cpp:372..423)
+- Cas erreur:
+  - error == 0xfeffffff => “Invalid Username/Password”
+- Si tokrequest correspond:
+  - token = in->token
+  - sendToken(0x02)
+  - tokenTimer->start(TOKEN_RENEWAL)
+  - isAuthenticated = true
+
+
+10) Token packets (TOKEN_SIZE=0x40)
+-----------------------------------
+
+Envoi (src/radio/icomudphandler.cpp:668..689):
+- token_packet:
+  - payloadsize big-endian(sizeof(p) - 0x10)
+  - requesttype = magic (ex: 0x02, 0x05, 0x01)
+  - requestreply = 0x01
+  - innerseq big-endian(authSeq++)
+  - tokrequest = tokRequest
+  - resetcap = big-endian(0x0798)
+  - token = token courant
+- envoi via sendTrackedPacket()
+
+Renouvellement:
+- tokenTimer est connecté à sendToken(0x05) (src/radio/icomudphandler.cpp: init())
+- Réponse traitée dans case TOKEN_SIZE (src/radio/icomudphandler.cpp:277..310):
+  - requesttype==0x05 && requestreply==0x02:
+    - response==0x0000 => succès, tokenTimer relancé; si stream pas ouvert => sendRequestStream()
+    - response==0xffffffff => rejet => re-sync token/ids puis sendRequestStream()
+
+Fermeture:
+- destructeur icomUdpHandler envoie sendToken(0x01) “token removal packet”
+  (src/radio/icomudphandler.cpp:101..103)
+
+
+11) Demande d’ouverture de streams (CONNINFO_SIZE=0x90)
+-------------------------------------------------------
+
+Quand un “radio” est sélectionné, WFview envoie une demande d’ouverture de CI‑V/audio.
+
+Choix des ports locaux:
+- icomUdpHandler::setCurrentRadio() choisit civLocalPort et audioLocalPort en bindant un socket temporaire
+  (src/radio/icomudphandler.cpp:549..558).
+
+Construction + envoi (src/radio/icomudphandler.cpp:581..622):
+- conninfo_packet p:
+  - payloadsize big-endian(sizeof(p) - 0x10)
+  - requesttype = 0x03
+  - requestreply = 0x01
+  - identification radio: soit commoncap=0x8010 + macaddress[6], soit guid[16] (selon capacités)
+  - innerseq big-endian(authSeq++)
+  - tokrequest + token
+  - name = devName (nom du poste)
+  - username = username encodé via passcode()
+  - rxenable=1 ; txenable=1 si txSampleRates > 1 (sinon pas de TX)
+  - rxcodec/txcodec + rxsample/txsample (big-endian 32-bit)
+  - civport = big-endian(civLocalPort)  (32-bit)
+  - audioport = big-endian(audioLocalPort) (32-bit)
+  - txbuffer = big-endian(txSetup.latency)
+  - convert=1 (à confirmer)
+- envoi via sendTrackedPacket()
+
+Réception d’un CONNINFO côté client:
+- case CONNINFO_SIZE (src/radio/icomudphandler.cpp:424..487)
+  WFview affiche l’état busy/computer/ip du poste et décide de se connecter si un seul poste dispo.
+
+
+12) Status packet (STATUS_SIZE=0x50) = ports distants (civ/audio)
+-----------------------------------------------------------------
+
+Après requestStream, le poste envoie un status_packet qui contient:
+- civport (big-endian quint16) à offset 0x42
+- audioport (big-endian quint16) à offset 0x46
+(voir include/packettypes.h: status_packet)
+
+Traitement (src/radio/icomudphandler.cpp:311..371):
+- civPort = qFromBigEndian(in->civport)
+- audioPort = qFromBigEndian(in->audioport)
+- création des objets:
+  - civ = new icomUdpCivData(localIP, radioIP, civPort, splitWf, civLocalPort)
+  - audio = new icomUdpAudio(localIP, radioIP, audioPort, audioLocalPort, rxSetup, txSetup)
+
+
+13) Encapsulation CI‑V (stream civ)
+-----------------------------------
+
+Envoi CI‑V (src/radio/icomudpcivdata.cpp:51..75):
+- WFview reçoit “d” (QByteArray) = trame CI‑V brute (typiquement commence par 0xFE… et finit par 0xFD).
+- Il construit un data_packet (alias ping_packet) de taille 0x15:
+  - len = sizeof(header) + d.length()
+  - sentid = myId
+  - rcvdid = remoteId
+  - reply = 0xC1  (marqueur “CI‑V” côté WFview)
+  - datalen = d.length()
+  - sendseq = big-endian(sendSeqB)  (séquence interne CI‑V, distincte de seq externe)
+- Il concatène header + payload CI‑V puis envoie via sendTrackedPacket()
+
+Ouverture/fermeture “CIV data” (src/radio/icomudpcivdata.cpp:78..110):
+- openclose_packet:
+  - data = 0x01c0 (à confirmer)
+  - magic = 0x04 pour “open”, 0x00 pour “close”
+  - sendseq big-endian(sendSeqB)
+  - envoi via sendTrackedPacket()
+
+Réception CI‑V:
+- icomUdpCivData::dataReceived() (src/radio/icomudpcivdata.cpp:113..)
+  - traite CONTROL_SIZE types 0x04/0x06 pour handshake
+  - sinon: interprète data_packet et extrait payload (vérifie datalen+0x15 == len)
+  - contient aussi du code de “splitWaterfall” (découpage de trames spectre) si activé.
+
+
+14) À reproduire côté Python (mapping direct)
+---------------------------------------------
+
+Si tu crées un client Python “sans WFview”, l’équivalent des briques WFview est:
+
+- Transport UDP + session:
+  - gérer myId/remoteId
+  - seq externe + buffer tx pour retransmit
+  - gestion rxMissing + envoi type 0x01 (retransmit requests)
+  - are-you-there / idle / ping (avec les mêmes périodes)
+  Fichiers WFview: include/packettypes.h, src/radio/icomudpbase.cpp, src/radio/icomudphandler.cpp
+
+- Auth:
+  - passcode(username/password)
+  - login_packet (LOGIN_SIZE)
+  - token lifecycle (TOKEN_SIZE)
+
+- Streams:
+  - envoyer conninfo_packet (CONNINFO_SIZE) avec ports locaux (civ/audio)
+  - lire status_packet pour récupérer ports distants civ/audio
+  - établir stream CI‑V (0x15 header + CI‑V brut; reply=0xC1; sendseq big-endian)
+  - gérer openclose_packet (magic 0x04 / 0x00)
+
+
+15) Prochaines infos “à extraire” si besoin
+-------------------------------------------
+
+Pour aller jusqu’à rig.get_frequency()/set_frequency(), il faudra ensuite:
+- localiser où WFview construit les trames CI‑V “fréquence” (0xFE … 0xFD) et comment il parse les réponses.
+  Pistes côté serveur (si WFview sert de passerelle):
+  - src/radio/icomserver.cpp:612 (strip de 0xFE, détection d’adresse CI‑V)
+
+Ce fichier-ci couvre surtout la couche UDP/session/auth/encapsulation.
+
+
+16) Optionnel: code “serveur” WFview (utile pour comprendre les réponses)
+------------------------------------------------------------------------
+
+WFview contient aussi une implémentation “serveur” de cette pile UDP (pas obligatoire
+pour un client Python direct vers l’IC-705, mais très utile pour comprendre le format
+des réponses attendues).
+
+- include/icomserver.h + src/radio/icomserver.cpp
+  - Bind 3 sockets UDP: contrôle, CI-V, audio (init).
+  - Crée des CLIENT à la première trame reçue et récupère l’ID distant via:
+    current->remoteId = qFromLittleEndian<quint32>(r.mid(8, 4))
+    (ex: src/radio/icomserver.cpp:171).
+  - Détecte l’adresse CI-V en inspectant les préambules 0xFE dans le flux CI-V:
+    (src/radio/icomserver.cpp:612).
+  - Construit et envoie des réponses “login/token/status/capabilities” via:
+    sendLoginResponse (src/radio/icomserver.cpp:1157),
+    sendCapabilities (src/radio/icomserver.cpp:1231),
+    sendConnectionInfo (src/radio/icomserver.cpp:1358),
+    sendTokenResponse (src/radio/icomserver.cpp:1448),
+    sendStatus (src/radio/icomserver.cpp:1562).

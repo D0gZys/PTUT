@@ -14,6 +14,7 @@
 #include "waterfall_model.h"
 #include "civ_client.h"
 #include "csv_replay.h"
+#include "csv_recorder.h"
 
 namespace {
 QFile g_logFile;
@@ -65,66 +66,68 @@ int main(int argc, char *argv[]) {
     qmlRegisterType<SpectrumItem>("IC705", 1, 0, "SpectrumItem");
     qmlRegisterType<WaterfallItem>("IC705", 1, 0, "WaterfallItem");
 
-    SpectrumModel spectrumModel;
-    spectrumModel.start();
-    WaterfallModel waterfallModel;
-    bool waterfallAuto = true;
-    QObject::connect(&spectrumModel, &SpectrumModel::samplesChanged, &waterfallModel,
-                     [&waterfallModel, &spectrumModel, &waterfallAuto]() {
-                         if (waterfallAuto) {
-                             waterfallModel.pushLine(spectrumModel.samples());
-                         }
+    SpectrumModel liveSpectrumModel;
+    liveSpectrumModel.start();
+    WaterfallModel liveWaterfallModel;
+    QObject::connect(&liveSpectrumModel, &SpectrumModel::samplesChanged, &liveWaterfallModel,
+                     [&liveWaterfallModel, &liveSpectrumModel]() {
+                         liveWaterfallModel.pushLine(liveSpectrumModel.samples());
                      });
+
+    SpectrumModel replaySpectrumModel;
+    WaterfallModel replayWaterfallModel;
+
     CivClient civClient;
     CsvReplay csvReplay;
+    CsvRecorder csvRecorder;
     bool liveActive = false;
-    bool replayActive = false;
-    QObject::connect(&civClient, &CivClient::spectrumReady, &spectrumModel,
-                     [&spectrumModel, &liveActive, &replayActive](const QVector<float> &samples) {
-                         if (replayActive) {
-                            return;
-                         }
-                         spectrumModel.setSamples(samples);
+
+    QObject::connect(&civClient, &CivClient::spectrumReady, &liveSpectrumModel,
+                     [&liveSpectrumModel, &liveActive](const QVector<float> &samples) {
+                         liveSpectrumModel.setSamples(samples);
                          if (!liveActive) {
-                             spectrumModel.stop();
+                             liveSpectrumModel.stop();
                              liveActive = true;
                          }
                      });
-    QObject::connect(&civClient, &CivClient::connectedChanged, &spectrumModel,
-                     [&civClient, &spectrumModel, &liveActive, &replayActive]() {
+    QObject::connect(&civClient, &CivClient::spectrumReady, &csvRecorder,
+                     [&csvRecorder](const QVector<float> &samples) {
+                         csvRecorder.pushSamples(samples);
+                     });
+    QObject::connect(&civClient, &CivClient::connectedChanged, &liveSpectrumModel,
+                     [&civClient, &liveSpectrumModel, &liveActive]() {
                          if (!civClient.connected()) {
                              liveActive = false;
-                             if (!replayActive) {
-                                 spectrumModel.start();
-                             }
+                             liveSpectrumModel.start();
                          }
                      });
-    QObject::connect(&csvReplay, &CsvReplay::frameReady, &spectrumModel,
-                     [&spectrumModel, &waterfallModel, &replayActive](const QVector<float> &samples) {
-                         spectrumModel.setSamples(samples);
-                         if (replayActive) {
-                             waterfallModel.pushLine(samples);
-                         }
+    QObject::connect(&civClient, &CivClient::freqChanged, &csvRecorder,
+                     [&civClient, &csvRecorder]() {
+                         csvRecorder.setCurrentFreqMHz(civClient.freqMHz());
                      });
-    QObject::connect(&csvReplay, &CsvReplay::historyReady, &waterfallModel,
-                     [&spectrumModel, &waterfallModel](const QVector<QVector<float>> &frames) {
-                         waterfallModel.clear();
+    QObject::connect(&civClient, &CivClient::refLevelChanged, &csvRecorder,
+                     [&civClient, &csvRecorder]() {
+                         csvRecorder.setRefLevel(civClient.refLevel());
+                     });
+    QObject::connect(&csvReplay, &CsvReplay::frameReady, &replaySpectrumModel,
+                     [&replaySpectrumModel, &replayWaterfallModel](const QVector<float> &samples) {
+                         replaySpectrumModel.setSamples(samples);
+                         replayWaterfallModel.pushLine(samples);
+                     });
+    QObject::connect(&csvReplay, &CsvReplay::historyReady, &replayWaterfallModel,
+                     [&replaySpectrumModel, &replayWaterfallModel](const QVector<QVector<float>> &frames) {
+                         replayWaterfallModel.clear();
                          for (const auto &frame : frames) {
-                             waterfallModel.pushLine(frame);
+                             replayWaterfallModel.pushLine(frame);
                          }
                          if (!frames.isEmpty()) {
-                             spectrumModel.setSamples(frames.last());
+                             replaySpectrumModel.setSamples(frames.last());
                          }
                      });
-    QObject::connect(&csvReplay, &CsvReplay::loadedChanged, &spectrumModel,
-                     [&csvReplay, &spectrumModel, &waterfallModel, &replayActive, &waterfallAuto]() {
-                         replayActive = csvReplay.loaded();
-                         waterfallAuto = !replayActive;
-                         if (replayActive) {
-                             spectrumModel.stop();
-                             waterfallModel.clear();
-                         } else {
-                             spectrumModel.start();
+    QObject::connect(&csvReplay, &CsvReplay::loadedChanged, &replayWaterfallModel,
+                     [&csvReplay, &replayWaterfallModel]() {
+                         if (!csvReplay.loaded()) {
+                             replayWaterfallModel.clear();
                          }
                      });
 
@@ -135,10 +138,13 @@ int main(int argc, char *argv[]) {
                              qWarning().noquote() << w.toString();
                          }
                      });
-    engine.rootContext()->setContextProperty("spectrumModel", &spectrumModel);
-    engine.rootContext()->setContextProperty("waterfallModel", &waterfallModel);
+    engine.rootContext()->setContextProperty("liveSpectrumModel", &liveSpectrumModel);
+    engine.rootContext()->setContextProperty("liveWaterfallModel", &liveWaterfallModel);
+    engine.rootContext()->setContextProperty("replaySpectrumModel", &replaySpectrumModel);
+    engine.rootContext()->setContextProperty("replayWaterfallModel", &replayWaterfallModel);
     engine.rootContext()->setContextProperty("civClient", &civClient);
     engine.rootContext()->setContextProperty("csvReplay", &csvReplay);
+    engine.rootContext()->setContextProperty("csvRecorder", &csvRecorder);
     engine.loadFromModule("IC705", "Main");
     if (engine.rootObjects().isEmpty()) {
         qCritical() << "Failed to load QML.";
