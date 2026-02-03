@@ -1,0 +1,961 @@
+import QtQuick
+import QtQuick.Window
+import QtQuick.Controls
+import QtQuick.Dialogs
+import QtQuick.Layouts
+import IC705
+
+Window {
+    width: 1000
+    height: 600
+    visible: true
+    title: "IC705 Qt - Step 1"
+    property real defaultFreq: 7.1
+    property real defaultSpanKhz: 5.0
+    property real liveCenterFreq: civClient.freqMHz > 0 ? civClient.freqMHz : defaultFreq
+    property real liveSpanKhz: defaultSpanKhz
+    property real liveFreqMin: liveCenterFreq - liveSpanKhz / 2000.0
+    property real liveFreqMax: liveCenterFreq + liveSpanKhz / 2000.0
+    property real csvCenterFreq: csvReplay.loaded && csvReplay.currentFreqMHz > 0 ? csvReplay.currentFreqMHz : defaultFreq
+    property real csvSpanKhz: csvReplay.loaded && csvReplay.currentSpanKHz > 0 ? csvReplay.currentSpanKHz : defaultSpanKhz
+    property real csvFreqMin: csvCenterFreq - csvSpanKhz / 2000.0
+    property real csvFreqMax: csvCenterFreq + csvSpanKhz / 2000.0
+    property real dbmMin: liveSpectrumModel.dbmMin
+    property real dbmMax: liveSpectrumModel.dbmMax
+    property real dbmMid: (dbmMin + dbmMax) / 2.0
+    property int wfDepth: 200
+    property int wfBottomIndex: Math.max(0, csvReplay.currentIndex - wfDepth + 1)
+    property string csvWfTopTime: csvReplay.loaded ? csvReplay.currentTimestamp : "--"
+    property string csvWfBottomTime: csvReplay.loaded ? csvReplay.timestampAt(wfBottomIndex) : "--"
+    property string defaultRadioIp: "192.168.59.1"
+    property string defaultRadioUser: "IC-705-7"
+    property string defaultRadioPass: "bouter20xx"
+    property string defaultRadioName: "IC-705-7"
+    property string defaultRadioMac: "00:90:C7:13:CA:75"
+    
+    // CSV markers
+    property int nextMarkerId: 1
+    
+    // Recent files
+    property string csvFolder: "recep_csv"
+    
+    onLiveSpanKhzChanged: csvRecorder.setCurrentSpanKHz(liveSpanKhz)
+    
+    Component.onCompleted: {
+        csvRecorder.setCurrentSpanKHz(liveSpanKhz)
+        refreshRecentFiles()
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 8
+        spacing: 8
+
+        TabBar {
+            id: modeTabs
+            Layout.fillWidth: true
+            TabButton { text: "Live" }
+            TabButton { text: "CSV" }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Label { text: "Min (dBm):" }
+            Slider {
+                id: minSlider
+                from: -160
+                to: -60
+                stepSize: 1
+                value: liveSpectrumModel.dbmMin
+                onMoved: {
+                    var minVal = value
+                    var maxVal = maxSlider.value
+                    if (minVal >= maxVal) {
+                        minVal = maxVal - 1
+                        value = minVal
+                    }
+                    liveSpectrumModel.setDbmRange(minVal, maxVal)
+                    liveWaterfallModel.setDbmRange(minVal, maxVal)
+                    replaySpectrumModel.setDbmRange(minVal, maxVal)
+                    replayWaterfallModel.setDbmRange(minVal, maxVal)
+                }
+            }
+            Label { text: minSlider.value.toFixed(0) }
+
+            Label { text: "Max (dBm):" }
+            Slider {
+                id: maxSlider
+                from: -160
+                to: -60
+                stepSize: 1
+                value: liveSpectrumModel.dbmMax
+                onMoved: {
+                    var minVal = minSlider.value
+                    var maxVal = value
+                    if (maxVal <= minVal) {
+                        maxVal = minVal + 1
+                        value = maxVal
+                    }
+                    liveSpectrumModel.setDbmRange(minVal, maxVal)
+                    liveWaterfallModel.setDbmRange(minVal, maxVal)
+                    replaySpectrumModel.setDbmRange(minVal, maxVal)
+                    replayWaterfallModel.setDbmRange(minVal, maxVal)
+                }
+            }
+            Label { text: maxSlider.value.toFixed(0) }
+            Button {
+                text: "Reset"
+                onClicked: {
+                    minSlider.value = -160
+                    maxSlider.value = -80
+                    liveSpectrumModel.setDbmRange(minSlider.value, maxSlider.value)
+                    liveWaterfallModel.setDbmRange(minSlider.value, maxSlider.value)
+                    replaySpectrumModel.setDbmRange(minSlider.value, maxSlider.value)
+                    replayWaterfallModel.setDbmRange(minSlider.value, maxSlider.value)
+                }
+            }
+        }
+
+        StackLayout {
+            id: modeStack
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: modeTabs.currentIndex
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: civClient.connected ? "Deconnecter" : "Connecter"
+                        onClicked: civClient.connected ? civClient.disconnectFromHost() : connectDialog.open()
+                    }
+                    Button { text: "Start"; enabled: false }
+                    Label {
+                        text: "Status: " + civClient.statusText + "  Freq: " + civClient.freqMHz.toFixed(3) + " MHz  Ref: " + civClient.refLevel + " dBm"
+                        Layout.fillWidth: true
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: csvRecorder.recording ? "STOP" : "REC"
+                        enabled: civClient.connected
+                        onClicked: csvRecorder.toggle()
+                    }
+                    CheckBox {
+                        id: triggerCheck
+                        text: "Trigger >"
+                        checked: csvRecorder.triggerEnabled
+                        enabled: !csvRecorder.recording
+                        onToggled: csvRecorder.setTriggerEnabled(checked)
+                    }
+                    TextField {
+                        id: triggerField
+                        text: ""
+                        Layout.preferredWidth: 80
+                        enabled: !csvRecorder.recording
+                        inputMethodHints: Qt.ImhFormattedNumbersOnly
+                        Component.onCompleted: text = csvRecorder.triggerThreshold.toFixed(0)
+                        onEditingFinished: {
+                            var v = parseFloat(text)
+                            if (isNaN(v)) {
+                                text = csvRecorder.triggerThreshold.toFixed(0)
+                                return
+                            }
+                            csvRecorder.setTriggerThreshold(v)
+                            text = v.toFixed(0)
+                        }
+                    }
+                    Label { text: "dBm" }
+                    Label {
+                        text: csvRecorder.statusText
+                        Layout.fillWidth: true
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 240
+                    color: "#101820"
+                    border.color: "#2a2a2a"
+                    radius: 4
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 6
+
+                            Item {
+                                Layout.preferredWidth: 70
+                                Layout.fillHeight: true
+
+                                Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
+                                Label {
+                                    text: dbmMax.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: dbmMid.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: dbmMin.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: "transparent"
+
+                                SpectrumItem {
+                                    anchors.fill: parent
+                                    model: liveSpectrumModel
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 18
+                            spacing: 6
+
+                            Item { Layout.preferredWidth: 70 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+
+                                Label {
+                                    text: liveFreqMin.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: liveCenterFreq.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: liveFreqMax.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: "#0b0f12"
+                    border.color: "#2a2a2a"
+                    radius: 4
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 6
+
+                            Item {
+                                Layout.preferredWidth: 70
+                                Layout.fillHeight: true
+
+                                Label { text: "Temps"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
+                                Label {
+                                    text: "--"
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: "--"
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: "transparent"
+
+                                WaterfallItem {
+                                    anchors.fill: parent
+                                    model: liveWaterfallModel
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 18
+                            spacing: 6
+
+                            Item { Layout.preferredWidth: 70 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+
+                                Label {
+                                    text: liveFreqMin.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: liveCenterFreq.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: liveFreqMax.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: "📂 Sélectionner CSV"
+                        onClicked: csvSelectorDialog.open()
+                    }
+                    Label {
+                        text: csvReplay.loaded ? (csvPath.text.split('/').pop().split('\\').pop()) : "Aucun fichier"
+                        elide: Text.ElideMiddle
+                        Layout.fillWidth: true
+                    }
+                    Button { text: "<<"; enabled: csvReplay.loaded && csvReplay.currentIndex > 0; onClicked: csvReplay.setIndex(0); ToolTip.text: "Début" }
+                    Button { text: "<"; enabled: csvReplay.loaded && csvReplay.currentIndex > 0; onClicked: csvReplay.prev() }
+                    Button { text: ">"; enabled: csvReplay.loaded && csvReplay.currentIndex + 1 < csvReplay.lineCount; onClicked: csvReplay.next() }
+                    Button { text: ">>"; enabled: csvReplay.loaded && csvReplay.currentIndex + 1 < csvReplay.lineCount; onClicked: csvReplay.setIndex(csvReplay.lineCount - 1); ToolTip.text: "Fin" }
+                    Label {
+                        text: csvReplay.loaded ? ((csvReplay.currentIndex + 1) + "/" + csvReplay.lineCount + " | " + csvReplay.currentTimestamp) : ""
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        text: csvReplay.playing ? "⏸ Pause" : "▶ Play"
+                        enabled: csvReplay.loaded
+                        onClicked: csvReplay.togglePlay()
+                    }
+                    
+                    Button {
+                        text: "🎯 Jump to Max"
+                        enabled: csvReplay.loaded
+                        onClicked: jumpToMaxSignal()
+                    }
+                    
+                    Button {
+                        text: "📍 Marqueur"
+                        enabled: csvReplay.loaded
+                        onClicked: addMarker()
+                    }
+                    
+                    Button {
+                        text: "📊 Export (TODO)"
+                        enabled: false
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Fonctionnalité en cours d'implémentation"
+                    }
+                    
+                    Label { text: "Position:" }
+                    Slider {
+                        id: positionSlider
+                        Layout.fillWidth: true
+                        from: 0
+                        to: csvReplay.lineCount > 0 ? csvReplay.lineCount - 1 : 0
+                        stepSize: 1
+                        enabled: csvReplay.loaded
+                        value: csvReplay.currentIndex
+                        onMoved: csvReplay.setIndex(Math.round(value))
+                    }
+                    Label { text: "Vitesse:" }
+                    ComboBox {
+                        id: speedCombo
+                        model: ["0.25x", "0.5x", "1x", "2x", "4x", "10x"]
+                        currentIndex: 2
+                        enabled: csvReplay.loaded
+                        onActivated: {
+                            var value = parseFloat(currentText)
+                            if (!isNaN(value)) {
+                                csvReplay.setSpeed(value)
+                            }
+                        }
+                    }
+                    Label { text: csvReplay.loaded ? ("x" + csvReplay.speed.toFixed(2)) : "" }
+                }
+                
+                // Markers display
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    visible: markersModel.count > 0
+                    
+                    Label {
+                        text: "Marqueurs (" + markersModel.count + "):"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 30
+                        ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+                        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+                        
+                        Row {
+                            spacing: 6
+                            Repeater {
+                                model: markersModel
+                                delegate: Rectangle {
+                                    width: markerContent.width + 8
+                                    height: 24
+                                    color: "#2a3a4a"
+                                    radius: 3
+                                    border.color: "#4a9eff"
+                                    
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: csvReplay.setIndex(model.index)
+                                        cursorShape: Qt.PointingHandCursor
+                                    }
+                                    
+                                    RowLayout {
+                                        id: markerContent
+                                        anchors.centerIn: parent
+                                        spacing: 6
+                                        
+                                        Label {
+                                            text: "#" + model.markerId + " | " + model.timestamp + " | " + model.maxDbm.toFixed(1) + " dBm"
+                                            font.pixelSize: 9
+                                        }
+                                        
+                                        Button {
+                                            text: "×"
+                                            implicitWidth: 20
+                                            implicitHeight: 16
+                                            font.pixelSize: 10
+                                            onClicked: removeMarker(index)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    Button {
+                        text: "🗑️"
+                        implicitHeight: 24
+                        implicitWidth: 30
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Effacer tous les marqueurs"
+                        onClicked: markersModel.clear()
+                    }
+                }
+
+                Label {
+                    text: csvReplay.lastError
+                    visible: csvReplay.lastError.length > 0
+                    color: "#ff6666"
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 240
+                    color: "#101820"
+                    border.color: "#2a2a2a"
+                    radius: 4
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 6
+
+                            Item {
+                                Layout.preferredWidth: 70
+                                Layout.fillHeight: true
+
+                                Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
+                                Label {
+                                    text: dbmMax.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: dbmMid.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: dbmMin.toFixed(0)
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: "transparent"
+
+                                SpectrumItem {
+                                    anchors.fill: parent
+                                    model: replaySpectrumModel
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 18
+                            spacing: 6
+
+                            Item { Layout.preferredWidth: 70 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+
+                                Label {
+                                    text: csvFreqMin.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: csvCenterFreq.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: csvFreqMax.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: "#0b0f12"
+                    border.color: "#2a2a2a"
+                    radius: 4
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 6
+
+                            Item {
+                                Layout.preferredWidth: 70
+                                Layout.fillHeight: true
+
+                                Label { text: "Temps"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
+                                Label {
+                                    text: csvWfTopTime
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: csvWfBottomTime
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: "transparent"
+
+                                WaterfallItem {
+                                    anchors.fill: parent
+                                    model: replayWaterfallModel
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 18
+                            spacing: 6
+
+                            Item { Layout.preferredWidth: 70 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+
+                                Label {
+                                    text: csvFreqMin.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: csvCenterFreq.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 10
+                                }
+                                Label {
+                                    text: csvFreqMax.toFixed(6)
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Hidden TextField for storing path
+    TextField {
+        id: csvPath
+        visible: false
+    }
+    
+    // Markers model
+    ListModel {
+        id: markersModel
+    }
+    
+    FileDialog {
+        id: csvFileDialog
+        title: "Ouvrir CSV"
+        nameFilters: ["CSV files (*.csv)", "All files (*)"]
+        onAccepted: {
+            csvPathField.text = csvFileDialog.selectedFile
+        }
+    }
+    
+    Dialog {
+        id: csvSelectorDialog
+        title: "Sélectionner un fichier CSV"
+        modal: true
+        width: 600
+        height: 500
+        standardButtons: Dialog.NoButton
+        
+        contentItem: ColumnLayout {
+            spacing: 12
+            
+            // Path selection
+            GroupBox {
+                title: "Fichier"
+                Layout.fillWidth: true
+                
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 8
+                    
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        
+                        TextField {
+                            id: csvPathField
+                            Layout.fillWidth: true
+                            placeholderText: "Chemin du fichier CSV..."
+                            text: csvPath.text
+                        }
+                        
+                        Button {
+                            text: "Parcourir"
+                            onClicked: csvFileDialog.open()
+                        }
+                    }
+                    
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        
+                        Button {
+                            text: "✓ Ouvrir"
+                            highlighted: true
+                            enabled: csvPathField.text.length > 0
+                            onClicked: {
+                                csvPath.text = csvPathField.text
+                                csvReplay.loadFile(csvPath.text)
+                                csvSelectorDialog.close()
+                            }
+                        }
+                        
+                        Button {
+                            text: "Annuler"
+                            onClicked: csvSelectorDialog.close()
+                        }
+                        
+                        Item { Layout.fillWidth: true }
+                        
+                        Button {
+                            text: "🔄"
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Actualiser la liste"
+                            onClicked: refreshRecentFiles()
+                        }
+                    }
+                }
+            }
+            
+            // Recent files
+            GroupBox {
+                title: "Fichiers récents"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 8
+                    
+                    ListView {
+                        id: recentFilesList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 4
+
+                        model: ListModel {
+                            id: recentFilesModel
+                        }
+
+                        delegate: Rectangle {
+                            width: recentFilesList.width
+                            height: 60
+                            color: mouseArea.containsMouse ? "#2a3a4a" : "#1a2a3a"
+                            radius: 3
+                            border.color: csvPath.text === model.filePath ? "#4a9eff" : "transparent"
+                            border.width: 2
+
+                            MouseArea {
+                                id: mouseArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: {
+                                    csvPathField.text = model.filePath
+                                }
+                                onDoubleClicked: {
+                                    csvPath.text = model.filePath
+                                    csvReplay.loadFile(model.filePath)
+                                    csvSelectorDialog.close()
+                                }
+                            }
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 6
+                                spacing: 2
+
+                                Label {
+                                    text: model.fileName
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
+                                Label {
+                                    text: model.date
+                                    font.pixelSize: 9
+                                    color: "#888"
+                                }
+                                RowLayout {
+                                    spacing: 8
+                                    Label {
+                                        text: model.lines + " lignes"
+                                        font.pixelSize: 9
+                                        color: "#aaa"
+                                    }
+                                    Label {
+                                        text: model.freq
+                                        font.pixelSize: 9
+                                        color: "#aaa"
+                                    }
+                                    Label {
+                                        text: model.maxDbm !== "" ? "Max: " + model.maxDbm + " dBm" : ""
+                                        font.pixelSize: 9
+                                        color: model.maxDbm !== "" && parseFloat(model.maxDbm) > -100 ? "#ff6b6b" : "#888"
+                                        visible: model.maxDbm !== ""
+                                    }
+                                }
+                            }
+                        }
+
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                }
+            }
+        }
+        
+        // FileDialog doit être déclaré au niveau Window, pas dans Dialog
+    }
+    
+    FileDialog {
+        id: fileDialog
+        title: "Ouvrir CSV"
+        nameFilters: ["CSV files (*.csv)", "All files (*)"]
+        onAccepted: {
+            csvPathField.text = fileDialog.selectedFile
+        }
+    }
+
+    Dialog {
+        id: connectDialog
+        title: "Connexion IC-705"
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: {
+            civClient.connectWithParams(
+                ipField.text,
+                userField.text,
+                passField.text,
+                nameField.text,
+                macField.text
+            )
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+            RowLayout {
+                spacing: 8
+                Label { text: "IP:" }
+                TextField { id: ipField; text: defaultRadioIp; Layout.preferredWidth: 200 }
+            }
+            RowLayout {
+                spacing: 8
+                Label { text: "User:" }
+                TextField { id: userField; text: defaultRadioUser; Layout.preferredWidth: 200 }
+            }
+            RowLayout {
+                spacing: 8
+                Label { text: "Pass:" }
+                TextField { id: passField; text: defaultRadioPass; echoMode: TextInput.Password; Layout.preferredWidth: 200 }
+            }
+            RowLayout {
+                spacing: 8
+                Label { text: "Name:" }
+                TextField { id: nameField; text: defaultRadioName; Layout.preferredWidth: 200 }
+            }
+            RowLayout {
+                spacing: 8
+                Label { text: "MAC:" }
+                TextField { id: macField; text: defaultRadioMac; Layout.preferredWidth: 200 }
+            }
+        }
+    }
+    
+    // JavaScript functions
+    function addMarker() {
+        if (!csvReplay.loaded) return
+        
+        var maxDbm = csvReplay.getCurrentMaxDbm()
+        
+        markersModel.append({
+            markerId: nextMarkerId++,
+            index: csvReplay.currentIndex,
+            timestamp: csvReplay.currentTimestamp,
+            freq: csvReplay.currentFreqMHz,
+            maxDbm: maxDbm
+        })
+        
+        console.log("Marker added #" + (nextMarkerId - 1) + ":", csvReplay.currentTimestamp, "max:", maxDbm.toFixed(1), "dBm")
+    }
+    
+    function removeMarker(index) {
+        markersModel.remove(index)
+        console.log("Marker removed at index:", index)
+    }
+    
+    function jumpToMaxSignal() {
+        if (!csvReplay.loaded) return
+        console.log("Jump to max: searching...")
+        var maxIndex = csvReplay.findMaxSignalIndex()
+        if (maxIndex >= 0) {
+            csvReplay.setIndex(maxIndex)
+            console.log("Found max at index:", maxIndex)
+        }
+    }
+    
+    function refreshRecentFiles() {
+        recentFilesModel.clear()
+        console.log("Refreshing recent files from:", csvFolder)
+        
+        var files = csvManager.scanRecentFiles(csvFolder, 50)
+        console.log("Found", files.length, "CSV files")
+        
+        for (var i = 0; i < files.length; i++) {
+            recentFilesModel.append(files[i])
+        }
+    }
+}

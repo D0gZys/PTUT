@@ -28,7 +28,12 @@ qt_add_executable(ic705_qt
     src/csv_replay.cpp
     src/csv_recorder.h
     src/csv_recorder.cpp
+    src/csv_manager.h
+    src/csv_manager.cpp
 )
+
+# Force C++ compilation before QML module
+set_target_properties(ic705_qt PROPERTIES AUTOMOC ON)
 
 add_subdirectory(qml)
 

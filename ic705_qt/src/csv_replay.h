@@ -38,6 +38,8 @@ public:
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void setSpeed(double speed);
     Q_INVOKABLE QString timestampAt(int index) const;
+    Q_INVOKABLE double getCurrentMaxDbm() const;
+    Q_INVOKABLE int findMaxSignalIndex() const;
 
 signals:
     void loadedChanged();

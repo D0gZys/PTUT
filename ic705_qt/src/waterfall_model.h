@@ -6,6 +6,8 @@
 
 class WaterfallModel : public QObject {
     Q_OBJECT
+    Q_PROPERTY(int width READ width CONSTANT)
+    Q_PROPERTY(int height READ height CONSTANT)
     Q_PROPERTY(float dbmMin READ dbmMin WRITE setDbmMin NOTIFY rangeChanged)
     Q_PROPERTY(float dbmMax READ dbmMax WRITE setDbmMax NOTIFY rangeChanged)
 public:
@@ -18,6 +20,7 @@ public:
     float dbmMax() const;
 
     Q_INVOKABLE void clear();
+    Q_INVOKABLE float valueAt(int x, int y) const;
     Q_INVOKABLE void setDbmMin(float value);
     Q_INVOKABLE void setDbmMax(float value);
     Q_INVOKABLE void setDbmRange(float minValue, float maxValue);
@@ -37,4 +40,5 @@ private:
     int m_height;
     float m_dbmMin;
     float m_dbmMax;
+    QVector<float> m_values;
 };

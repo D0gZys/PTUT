@@ -1,0 +1,6 @@
+@echo off
+cd /d "%~dp0"
+echo Deploiement des DLL Qt...
+"C:\Qt\6.11.0\msvc2022_64\bin\windeployqt.exe" --qmldir qml --debug "build\Debug\ic705_qt.exe" >nul 2>&1
+echo Lancement de l'application...
+start "" "build\Debug\ic705_qt.exe"

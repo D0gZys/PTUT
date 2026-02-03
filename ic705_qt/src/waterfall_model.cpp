@@ -51,7 +51,8 @@ WaterfallModel::WaterfallModel(QObject *parent)
       m_width(kWaterfallWidth),
       m_height(kWaterfallHeight),
       m_dbmMin(-160.0f),
-      m_dbmMax(-80.0f) {
+      m_dbmMax(-80.0f),
+      m_values(kWaterfallWidth * kWaterfallHeight, -160.0f) {
     m_image.fill(qRgb(0, 0, 0));
 }
 
@@ -99,7 +100,21 @@ void WaterfallModel::setDbmRange(float minValue, float maxValue) {
 
 void WaterfallModel::clear() {
     m_image.fill(qRgb(0, 0, 0));
+    m_values.fill(m_dbmMin);
     emit imageChanged();
+}
+
+float WaterfallModel::valueAt(int x, int y) const {
+    if (m_values.isEmpty()) {
+        return m_dbmMin;
+    }
+    const int clampedX = qBound(0, x, m_width - 1);
+    const int clampedY = qBound(0, y, m_height - 1);
+    const int idx = clampedY * m_width + clampedX;
+    if (idx < 0 || idx >= m_values.size()) {
+        return m_dbmMin;
+    }
+    return m_values[idx];
 }
 
 void WaterfallModel::pushLine(const QVector<float> &samples) {
@@ -116,9 +131,17 @@ void WaterfallModel::pushLine(const QVector<float> &samples) {
     QRgb *row = reinterpret_cast<QRgb *>(bits);
     const float range = (m_dbmMax - m_dbmMin) > 0.001f ? (m_dbmMax - m_dbmMin) : 1.0f;
 
+    if (!m_values.isEmpty()) {
+        std::memmove(m_values.data() + m_width, m_values.data(),
+                     sizeof(float) * m_width * (m_height - 1));
+    }
+
     for (int x = 0; x < m_width; ++x) {
         float t = (line[x] - m_dbmMin) / range;
         row[x] = mapColor(t);
+        if (!m_values.isEmpty()) {
+            m_values[x] = line[x];
+        }
     }
 
     emit imageChanged();

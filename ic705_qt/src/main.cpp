@@ -15,6 +15,7 @@
 #include "civ_client.h"
 #include "csv_replay.h"
 #include "csv_recorder.h"
+#include "csv_manager.h"
 
 namespace {
 QFile g_logFile;
@@ -80,6 +81,7 @@ int main(int argc, char *argv[]) {
     CivClient civClient;
     CsvReplay csvReplay;
     CsvRecorder csvRecorder;
+    CsvManager csvManager;
     bool liveActive = false;
 
     QObject::connect(&civClient, &CivClient::spectrumReady, &liveSpectrumModel,
@@ -145,6 +147,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("civClient", &civClient);
     engine.rootContext()->setContextProperty("csvReplay", &csvReplay);
     engine.rootContext()->setContextProperty("csvRecorder", &csvRecorder);
+    engine.rootContext()->setContextProperty("csvManager", &csvManager);
     engine.loadFromModule("IC705", "Main");
     if (engine.rootObjects().isEmpty()) {
         qCritical() << "Failed to load QML.";

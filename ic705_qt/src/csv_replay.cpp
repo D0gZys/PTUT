@@ -303,3 +303,50 @@ QVector<float> CsvReplay::resample(const QVector<float> &input, int targetSize) 
     }
     return out;
 }
+
+double CsvReplay::getCurrentMaxDbm() const {
+    if (!m_loaded || m_currentIndex < 0 || m_currentIndex >= m_frames.size()) {
+        return -999.0;
+    }
+    
+    const auto &samples = m_frames[m_currentIndex].samples;
+    if (samples.isEmpty()) {
+        return -999.0;
+    }
+    
+    float maxVal = samples[0];
+    for (float val : samples) {
+        if (val > maxVal) {
+            maxVal = val;
+        }
+    }
+    return static_cast<double>(maxVal);
+}
+
+int CsvReplay::findMaxSignalIndex() const {
+    if (!m_loaded || m_frames.isEmpty()) {
+        return -1;
+    }
+    
+    int maxIndex = 0;
+    double maxDbm = -999.0;
+    
+    for (int i = 0; i < m_frames.size(); ++i) {
+        const auto &samples = m_frames[i].samples;
+        if (samples.isEmpty()) continue;
+        
+        float frameMax = samples[0];
+        for (float val : samples) {
+            if (val > frameMax) {
+                frameMax = val;
+            }
+        }
+        
+        if (frameMax > maxDbm) {
+            maxDbm = frameMax;
+            maxIndex = i;
+        }
+    }
+    
+    return maxIndex;
+}
