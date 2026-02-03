@@ -21,6 +21,10 @@ const QVector<float> &SpectrumModel::samples() const {
     return m_samples;
 }
 
+int SpectrumModel::count() const {
+    return m_samples.size();
+}
+
 float SpectrumModel::dbmMin() const {
     return m_dbmMin;
 }
@@ -49,6 +53,14 @@ void SpectrumModel::setDbmRange(float minValue, float maxValue) {
     m_dbmMin = min;
     m_dbmMax = max;
     emit rangeChanged();
+}
+
+float SpectrumModel::valueAt(int index) const {
+    if (m_samples.isEmpty()) {
+        return m_dbmMin;
+    }
+    const int clamped = qBound(0, index, m_samples.size() - 1);
+    return m_samples[clamped];
 }
 
 void SpectrumModel::start() {

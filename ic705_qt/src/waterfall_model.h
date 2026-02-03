@@ -34,6 +34,7 @@ signals:
 
 private:
     QRgb mapColor(float value) const;
+    void rebuildImage();
 
     QImage m_image;
     int m_width;

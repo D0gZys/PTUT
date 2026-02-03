@@ -95,6 +95,7 @@ void WaterfallModel::setDbmRange(float minValue, float maxValue) {
     }
     m_dbmMin = min;
     m_dbmMax = max;
+    rebuildImage();
     emit rangeChanged();
 }
 
@@ -164,4 +165,23 @@ QRgb WaterfallModel::mapColor(float value) const {
     const int idx = qBound(0, int(scaled), count - 2);
     const float local = scaled - float(idx);
     return lerpColor(kColors[idx], kColors[idx + 1], local);
+}
+
+void WaterfallModel::rebuildImage() {
+    if (m_image.isNull() || m_values.isEmpty()) {
+        m_image.fill(qRgb(0, 0, 0));
+        emit imageChanged();
+        return;
+    }
+
+    const float range = (m_dbmMax - m_dbmMin) > 0.001f ? (m_dbmMax - m_dbmMin) : 1.0f;
+    for (int y = 0; y < m_height; ++y) {
+        QRgb *row = reinterpret_cast<QRgb *>(m_image.scanLine(y));
+        const int base = y * m_width;
+        for (int x = 0; x < m_width; ++x) {
+            float t = (m_values[base + x] - m_dbmMin) / range;
+            row[x] = mapColor(t);
+        }
+    }
+    emit imageChanged();
 }

@@ -8,10 +8,12 @@ class SpectrumModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(float dbmMin READ dbmMin WRITE setDbmMin NOTIFY rangeChanged)
     Q_PROPERTY(float dbmMax READ dbmMax WRITE setDbmMax NOTIFY rangeChanged)
+    Q_PROPERTY(int count READ count NOTIFY samplesChanged)
 public:
     explicit SpectrumModel(QObject *parent = nullptr);
 
     const QVector<float> &samples() const;
+    int count() const;
     float dbmMin() const;
     float dbmMax() const;
 
@@ -20,6 +22,7 @@ public:
     Q_INVOKABLE void setDbmMin(float value);
     Q_INVOKABLE void setDbmMax(float value);
     Q_INVOKABLE void setDbmRange(float minValue, float maxValue);
+    Q_INVOKABLE float valueAt(int index) const;
     void setSamples(const QVector<float> &samples);
 
 signals:

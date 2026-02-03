@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtQuick.Shapes
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
@@ -38,6 +39,7 @@ Window {
     property string csvWfTopTime: csvReplay.loaded ? csvReplay.currentTimestamp : "--"
     property string csvWfBottomTime: csvReplay.loaded ? csvReplay.timestampAt(wfBottomIndex) : "--"
     property bool csvMarkersEnabled: true
+    property int maxSpectrumCursors: 2
 
     property string defaultRadioIp: "192.168.59.1"
     property string defaultRadioUser: "IC-705-7"
@@ -48,6 +50,7 @@ Window {
     property string csvPath: ""
 
     ListModel { id: csvMarkersModel }
+    ListModel { id: spectrumCursorModel }
     Connections {
         target: csvReplay
         function onLoadedChanged() {
@@ -59,6 +62,34 @@ Window {
 
     onLiveSpanKhzChanged: csvRecorder.setCurrentSpanKHz(liveSpanKhz)
     Component.onCompleted: csvRecorder.setCurrentSpanKHz(liveSpanKhz)
+
+    function spectrumCount() {
+        return replaySpectrumModel.count > 0 ? replaySpectrumModel.count : 475
+    }
+
+    function cursorIndex(xNorm) {
+        return Math.round(xNorm * (spectrumCount() - 1))
+    }
+
+    function cursorDbm(xNorm) {
+        return replaySpectrumModel.valueAt(cursorIndex(xNorm))
+    }
+
+    function cursorFreq(xNorm) {
+        return csvFreqMin + xNorm * (csvFreqMax - csvFreqMin)
+    }
+
+    function addSpectrumCursor() {
+        if (spectrumCursorModel.count >= maxSpectrumCursors) return
+        var x = spectrumCursorModel.count === 0 ? 0.35 : 0.65
+        spectrumCursorModel.append({ xNorm: x })
+    }
+
+    function removeSpectrumCursor() {
+        if (spectrumCursorModel.count > 0) {
+            spectrumCursorModel.remove(spectrumCursorModel.count - 1)
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -320,7 +351,71 @@ Window {
                                         Label { text: csvDbmMid.toFixed(0); anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10 }
                                         Label { text: csvDbmMin.toFixed(0); anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
                                     }
-                                    SpectrumItem { id: csvSpectrumDisplay; Layout.fillWidth: true; Layout.fillHeight: true; model: replaySpectrumModel }
+                                    Item {
+                                        id: csvSpectrumArea
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        SpectrumItem {
+                                            id: csvSpectrumDisplay
+                                            anchors.fill: parent
+                                            model: replaySpectrumModel
+                                        }
+
+                                        Repeater {
+                                            model: spectrumCursorModel
+                                              delegate: Item {
+                                                  anchors.fill: parent
+                                                  property real xNorm: model.xNorm
+                                                  property int idx: cursorIndex(xNorm)
+                                                  property real valueDbm: cursorDbm(xNorm)
+                                                  property real yNorm: (csvDbmMax - csvDbmMin) > 0.001 ? (valueDbm - csvDbmMin) / (csvDbmMax - csvDbmMin) : 0.5
+                                                  property real xPos: xNorm * width
+                                                  property real yPos: (1.0 - Math.max(0.0, Math.min(1.0, yNorm))) * height
+                                                  property color cursorColor: index === 0 ? "#ffb000" : "#4db6ff"
+
+                                                  Rectangle {
+                                                      x: xPos
+                                                      y: 0
+                                                      width: 1
+                                                      height: parent.height
+                                                      color: cursorColor
+                                                      opacity: 0.6
+                                                  }
+
+                                                  Shape {
+                                                      id: cursorMarker
+                                                      x: xPos - width / 2
+                                                      y: yPos - height
+                                                      width: 12
+                                                      height: 10
+                                                      ShapePath {
+                                                          strokeWidth: 1
+                                                          strokeColor: "#000000"
+                                                          fillColor: cursorColor
+                                                          startX: 0
+                                                          startY: 0
+                                                          PathLine { x: cursorMarker.width; y: 0 }
+                                                          PathLine { x: cursorMarker.width / 2; y: cursorMarker.height }
+                                                          PathLine { x: 0; y: 0 }
+                                                      }
+                                                  }
+
+                                                  MouseArea {
+                                                      anchors.fill: cursorMarker
+                                                      cursorShape: Qt.SizeHorCursor
+                                                      onPositionChanged: {
+                                                          if (!pressed) return
+                                                          var p = mapToItem(csvSpectrumArea, mouse.x, mouse.y)
+                                                          var nx = p.x / csvSpectrumArea.width
+                                                        if (nx < 0) nx = 0
+                                                        if (nx > 1) nx = 1
+                                                        spectrumCursorModel.setProperty(index, "xNorm", nx)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 RowLayout {
@@ -445,6 +540,57 @@ Window {
                             anchors.fill: parent
                             anchors.margins: 8
                             spacing: 10
+
+                            GroupBox {
+                                title: "Spectre"
+                                Layout.fillWidth: true
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    spacing: 6
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Button {
+                                            text: "+"
+                                            enabled: spectrumCursorModel.count < maxSpectrumCursors
+                                            onClicked: addSpectrumCursor()
+                                        }
+                                        Button {
+                                            text: "-"
+                                            enabled: spectrumCursorModel.count > 0
+                                            onClicked: removeSpectrumCursor()
+                                        }
+                                        Label {
+                                            text: spectrumCursorModel.count + "/" + maxSpectrumCursors
+                                        }
+                                    }
+
+                                    Repeater {
+                                        model: spectrumCursorModel
+                                        delegate: ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            Label {
+                                                text: "C" + (index + 1) +
+                                                      "  F=" + cursorFreq(model.xNorm).toFixed(6) + " MHz" +
+                                                      "  P=" + cursorDbm(model.xNorm).toFixed(1) + " dBm"
+                                                font.pixelSize: 10
+                                            }
+                                        }
+                                    }
+
+                                    Label {
+                                        visible: spectrumCursorModel.count >= 2
+                                        text: spectrumCursorModel.count >= 2
+                                              ? ("Delta F=" + Math.abs(cursorFreq(spectrumCursorModel.get(1).xNorm) - cursorFreq(spectrumCursorModel.get(0).xNorm)).toFixed(6) + " MHz" +
+                                                 "  Delta P=" + Math.abs(cursorDbm(spectrumCursorModel.get(1).xNorm) - cursorDbm(spectrumCursorModel.get(0).xNorm)).toFixed(1) + " dB")
+                                              : ""
+                                        font.pixelSize: 10
+                                    }
+                                }
+                            }
 
                             GroupBox {
                                 title: "Gain (dBm)"
