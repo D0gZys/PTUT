@@ -13,6 +13,18 @@ Window {
     visible: true
     title: "IC705 Qt - Step 1"
 
+    Item {
+        id: keyCatcher
+        anchors.fill: parent
+        focus: true
+        Keys.onPressed: {
+            if (event.key === Qt.Key_Escape && csvZoomMode) {
+                csvZoomMode = false
+                event.accepted = true
+            }
+        }
+    }
+
     property real defaultFreq: 7.1
     property real defaultSpanKhz: 5.0
 
@@ -33,6 +45,13 @@ Window {
     property real csvDbmMin: replaySpectrumModel.dbmMin
     property real csvDbmMax: replaySpectrumModel.dbmMax
     property real csvDbmMid: (csvDbmMin + csvDbmMax) / 2.0
+    property real csvZoomX: 1.0
+    property real csvZoomY: 1.0
+    property real csvZoomMin: 1.0
+    property real csvZoomMax: 8.0
+    property real csvZoomCx: 0.5
+    property real csvZoomCy: 0.5
+    property bool csvZoomMode: false
 
     property int wfDepth: 200
     property int wfBottomIndex: Math.max(0, csvReplay.currentIndex - wfDepth + 1)
@@ -65,6 +84,74 @@ Window {
 
     function spectrumCount() {
         return replaySpectrumModel.count > 0 ? replaySpectrumModel.count : 475
+    }
+    function clamp01(v) {
+        if (v < 0) return 0
+        if (v > 1) return 1
+        return v
+    }
+
+    function csvZoomOffsetX() {
+        var w = csvWaterfallViewport ? csvWaterfallViewport.width : 0
+        var x = -csvZoomCx * (csvZoomX - 1) * w
+        var minX = w - w * csvZoomX
+        if (x < minX) x = minX
+        if (x > 0) x = 0
+        return x
+    }
+
+    function csvZoomOffsetY() {
+        var h = csvWaterfallViewport ? csvWaterfallViewport.height : 0
+        var y = -csvZoomCy * (csvZoomY - 1) * h
+        var minY = h - h * csvZoomY
+        if (y < minY) y = minY
+        if (y > 0) y = 0
+        return y
+    }
+
+    function resetCsvZoom() {
+        csvZoomX = 1.0
+        csvZoomY = 1.0
+        csvZoomCx = 0.5
+        csvZoomCy = 0.5
+    }
+
+    function setZoomFromRect(nx0, ny0, nx1, ny1) {
+        var x0 = Math.min(nx0, nx1)
+        var x1 = Math.max(nx0, nx1)
+        var y0 = Math.min(ny0, ny1)
+        var y1 = Math.max(ny0, ny1)
+        var w = x1 - x0
+        var h = y1 - y0
+        if (w < 0.01 || h < 0.01) return
+        var zx = 1.0 / w
+        var zy = 1.0 / h
+        if (zx < csvZoomMin) zx = csvZoomMin
+        if (zy < csvZoomMin) zy = csvZoomMin
+        if (zx > csvZoomMax) zx = csvZoomMax
+        if (zy > csvZoomMax) zy = csvZoomMax
+        csvZoomX = zx
+        csvZoomY = zy
+        csvZoomCx = (x0 + x1) * 0.5
+        csvZoomCy = (y0 + y1) * 0.5
+    }
+
+    function screenToNorm(mx, my) {
+        var w = csvWaterfallViewport ? csvWaterfallViewport.width : 0
+        var h = csvWaterfallViewport ? csvWaterfallViewport.height : 0
+        var nx = (mx - csvZoomOffsetX()) / (w * csvZoomX)
+        var ny = (my - csvZoomOffsetY()) / (h * csvZoomY)
+        return { x: clamp01(nx), y: clamp01(ny) }
+    }
+
+    function mapZoomX(xr) {
+        var w = csvWaterfallViewport ? csvWaterfallViewport.width : 0
+        return xr * w * csvZoomX + csvZoomOffsetX()
+    }
+
+    function mapZoomY(yr) {
+        var h = csvWaterfallViewport ? csvWaterfallViewport.height : 0
+        return yr * h * csvZoomY + csvZoomOffsetY()
     }
 
     function cursorIndex(xNorm) {
@@ -245,6 +332,8 @@ Window {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 model: liveWaterfallModel
+                                onHeightChanged: if (model) model.setHeight(Math.max(1, Math.round(height)))
+                                Component.onCompleted: if (model) model.setHeight(Math.max(1, Math.round(height)))
                             }
                         }
 
@@ -458,10 +547,31 @@ Window {
                                         Label { text: csvWfBottomTime; anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
                                     }
                                     Item {
+                                        id: csvWaterfallViewport
                                         Layout.fillWidth: true
                                         Layout.fillHeight: true
-                                        WaterfallItem { id: csvWaterfallDisplay; anchors.fill: parent; model: replayWaterfallModel }
-
+                                        clip: true
+                                    
+                                        WaterfallItem {
+                                            id: csvWaterfallDisplay
+                                            width: parent.width
+                                            height: parent.height
+                                            model: replayWaterfallModel
+                                            transform: Scale { origin.x: 0; origin.y: 0; xScale: csvZoomX; yScale: csvZoomY }
+                                            x: csvZoomOffsetX()
+                                            y: csvZoomOffsetY()
+                                            onHeightChanged: {
+                                                var h = Math.max(1, Math.round(height))
+                                                if (model) model.setHeight(h)
+                                                csvReplay.setWaterfallDepth(h)
+                                            }
+                                            Component.onCompleted: {
+                                                var h = Math.max(1, Math.round(height))
+                                                if (model) model.setHeight(h)
+                                                csvReplay.setWaterfallDepth(h)
+                                            }
+                                        }
+                                    
                                         WheelHandler {
                                             onWheel: function (wheel) {
                                                 if (!csvReplay.loaded) return
@@ -472,29 +582,77 @@ Window {
                                                 csvReplay.setIndex(csvReplay.currentIndex + dir * step)
                                             }
                                         }
+                                    
+                                        Rectangle {
+                                            id: zoomRect
+                                            visible: zoomArea.zoomSelecting
+                                            x: Math.min(zoomArea.selStartX, zoomArea.selEndX)
+                                            y: Math.min(zoomArea.selStartY, zoomArea.selEndY)
+                                            width: Math.abs(zoomArea.selEndX - zoomArea.selStartX)
+                                            height: Math.abs(zoomArea.selEndY - zoomArea.selStartY)
+                                            color: "#00ffffff"
+                                            border.color: "#ffaa00"
+                                            border.width: 1
+                                        }
 
                                         MouseArea {
+                                            id: zoomArea
                                             anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: csvZoomMode ? Qt.CrossCursor : Qt.ArrowCursor
+                                            property bool zoomSelecting: false
+                                            property real selStartX: 0
+                                            property real selStartY: 0
+                                            property real selEndX: 0
+                                            property real selEndY: 0
+
+                                            onPressed: {
+                                                if (!csvZoomMode) return
+                                                zoomSelecting = true
+                                                selStartX = mouse.x
+                                                selStartY = mouse.y
+                                                selEndX = mouse.x
+                                                selEndY = mouse.y
+                                            }
+                                            onPositionChanged: {
+                                                if (!zoomSelecting) return
+                                                selEndX = mouse.x
+                                                selEndY = mouse.y
+                                            }
+                                            onReleased: {
+                                                if (!zoomSelecting) return
+                                                zoomSelecting = false
+                                                var dx = Math.abs(selEndX - selStartX)
+                                                var dy = Math.abs(selEndY - selStartY)
+                                                if (dx < 4 || dy < 4) return
+                                                var left = Math.min(selStartX, selEndX)
+                                                var right = Math.max(selStartX, selEndX)
+                                                var top = Math.min(selStartY, selEndY)
+                                                var bottom = Math.max(selStartY, selEndY)
+                                                var n0 = screenToNorm(left, top)
+                                                var n1 = screenToNorm(right, bottom)
+                                                setZoomFromRect(n0.x, n0.y, n1.x, n1.y)
+                                            }
                                             onClicked: {
-                                                if (!csvMarkersEnabled) return
-                                                var xr = mouse.x / width
-                                                var yr = mouse.y / height
-                                                var xIdx = Math.round(xr * (replayWaterfallModel.width - 1))
-                                                var yIdx = Math.round(yr * (replayWaterfallModel.height - 1))
+                                                if (csvZoomMode || !csvMarkersEnabled) return
+                                                var n = screenToNorm(mouse.x, mouse.y)
+                                                var xIdx = Math.round(n.x * (replayWaterfallModel.width - 1))
+                                                var yIdx = Math.round(n.y * (replayWaterfallModel.height - 1))
                                                 var freq = csvFreqMin + (xIdx / (replayWaterfallModel.width - 1)) * (csvFreqMax - csvFreqMin)
                                                 var dbm = replayWaterfallModel.valueAt(xIdx, yIdx)
                                                 var timeText = csvReplay.loaded ? csvReplay.timestampAt(csvReplay.currentIndex - yIdx) : "CSV"
-                                                csvMarkersModel.append({ xr: xr, yr: yr, freq: freq, dbm: dbm, time: timeText })
+                                                csvMarkersModel.append({ xr: n.x, yr: n.y, freq: freq, dbm: dbm, time: timeText })
                                             }
                                         }
-
+                                    
                                         Repeater {
                                             model: csvMarkersModel
                                             delegate: Item {
                                                 anchors.fill: parent
-                                                property real px: model.xr * width
-                                                property real py: model.yr * height
-                                                Rectangle { x: px - 3; y: py - 3; width: 6; height: 6; radius: 3; color: "#ffff00" }
+                                                property real px: mapZoomX(model.xr)
+                                                property real py: mapZoomY(model.yr)
+                                                Rectangle { x: px - 4; y: py; width: 9; height: 1; color: "#ffff00" }
+                                                Rectangle { x: px; y: py - 4; width: 1; height: 9; color: "#ffff00" }
                                                 Rectangle {
                                                     id: markerLabelBg
                                                     width: markerLabel.implicitWidth + 8
@@ -649,6 +807,34 @@ Window {
                             }
 
                             GroupBox {
+                                title: "Zoom"
+                                Layout.fillWidth: true
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    spacing: 6
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Button {
+                                            text: csvZoomMode ? "Zoom: ON" : "Zoom"
+                                            checkable: true
+                                            checked: csvZoomMode
+                                            onClicked: csvZoomMode = checked
+                                        }
+                                        Button {
+                                            text: "Reset"
+                                            onClicked: {
+                                                resetCsvZoom()
+                                                csvZoomMode = false
+                                            }
+                                        }
+                                    }
+                                    Label { text: "Drag a rectangle in waterfall to zoom"; font.pixelSize: 10 }
+                                    Label { text: "Esc to exit zoom mode"; font.pixelSize: 10 }
+                                }
+                            }
+
+                            GroupBox {
                                 title: "Markers"
                                 Layout.fillWidth: true
                                 ColumnLayout {
@@ -670,12 +856,12 @@ Window {
                             }
 
                             Item { Layout.fillHeight: true }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                    }
-                }
-            }
-        }
-    }
 
     FileDialog {
         id: csvFileDialog

@@ -15,6 +15,7 @@ class CsvReplay : public QObject {
     Q_PROPERTY(double speed READ speed NOTIFY speedChanged)
     Q_PROPERTY(double currentFreqMHz READ currentFreqMHz NOTIFY currentFreqChanged)
     Q_PROPERTY(double currentSpanKHz READ currentSpanKHz NOTIFY currentSpanChanged)
+    Q_PROPERTY(int waterfallDepth READ waterfallDepth WRITE setWaterfallDepth NOTIFY waterfallDepthChanged)
 
 public:
     explicit CsvReplay(QObject *parent = nullptr);
@@ -28,6 +29,7 @@ public:
     double speed() const;
     double currentFreqMHz() const;
     double currentSpanKHz() const;
+    int waterfallDepth() const;
 
     Q_INVOKABLE bool loadFile(const QString &path);
     Q_INVOKABLE void next();
@@ -37,6 +39,7 @@ public:
     Q_INVOKABLE void pause();
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void setSpeed(double speed);
+    Q_INVOKABLE void setWaterfallDepth(int depth);
     Q_INVOKABLE QString timestampAt(int index) const;
     Q_INVOKABLE double getCurrentMaxDbm() const;
     Q_INVOKABLE int findMaxSignalIndex() const;
@@ -51,6 +54,7 @@ signals:
     void speedChanged();
     void currentFreqChanged();
     void currentSpanChanged();
+    void waterfallDepthChanged();
     void frameReady(const QVector<float> &samples);
     void historyReady(const QVector<QVector<float>> &frames);
 
@@ -77,4 +81,5 @@ private:
     double m_speed;
     double m_currentFreqMHz;
     double m_currentSpanKHz;
+    int m_waterfallDepth;
 };

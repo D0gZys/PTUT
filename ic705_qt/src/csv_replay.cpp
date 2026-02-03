@@ -17,7 +17,8 @@ CsvReplay::CsvReplay(QObject *parent)
       m_playing(false),
       m_speed(1.0),
       m_currentFreqMHz(0.0),
-      m_currentSpanKHz(0.0) {
+      m_currentSpanKHz(0.0),
+      m_waterfallDepth(kWaterfallDepth) {
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &CsvReplay::next);
     updateTimer();
@@ -57,6 +58,10 @@ double CsvReplay::currentFreqMHz() const {
 
 double CsvReplay::currentSpanKHz() const {
     return m_currentSpanKHz;
+}
+
+int CsvReplay::waterfallDepth() const {
+    return m_waterfallDepth;
 }
 
 bool CsvReplay::loadFile(const QString &path) {
@@ -217,6 +222,18 @@ void CsvReplay::setSpeed(double speed) {
     updateTimer();
 }
 
+void CsvReplay::setWaterfallDepth(int depth) {
+    const int clamped = qMax(1, depth);
+    if (clamped == m_waterfallDepth) {
+        return;
+    }
+    m_waterfallDepth = clamped;
+    emit waterfallDepthChanged();
+    if (m_loaded && m_currentIndex >= 0) {
+        showFrame(m_currentIndex, true);
+    }
+}
+
 void CsvReplay::showFrame(int index, bool rebuild) {
     if (index < 0 || index >= m_frames.size()) {
         return;
@@ -240,7 +257,8 @@ void CsvReplay::showFrame(int index, bool rebuild) {
 
     if (rebuild) {
         QVector<QVector<float>> history;
-        const int start = qMax(0, index - kWaterfallDepth + 1);
+        const int depth = qMax(1, m_waterfallDepth);
+        const int start = qMax(0, index - depth + 1);
         history.reserve(index - start + 1);
         for (int i = start; i <= index; ++i) {
             history.append(m_frames[i].samples);

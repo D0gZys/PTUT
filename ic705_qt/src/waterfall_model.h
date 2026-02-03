@@ -7,7 +7,7 @@
 class WaterfallModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(int width READ width CONSTANT)
-    Q_PROPERTY(int height READ height CONSTANT)
+    Q_PROPERTY(int height READ height WRITE setHeight NOTIFY sizeChanged)
     Q_PROPERTY(float dbmMin READ dbmMin WRITE setDbmMin NOTIFY rangeChanged)
     Q_PROPERTY(float dbmMax READ dbmMax WRITE setDbmMax NOTIFY rangeChanged)
 public:
@@ -21,6 +21,7 @@ public:
 
     Q_INVOKABLE void clear();
     Q_INVOKABLE float valueAt(int x, int y) const;
+    Q_INVOKABLE void setHeight(int height);
     Q_INVOKABLE void setDbmMin(float value);
     Q_INVOKABLE void setDbmMax(float value);
     Q_INVOKABLE void setDbmRange(float minValue, float maxValue);
@@ -31,6 +32,7 @@ public slots:
 signals:
     void imageChanged();
     void rangeChanged();
+    void sizeChanged();
 
 private:
     QRgb mapColor(float value) const;

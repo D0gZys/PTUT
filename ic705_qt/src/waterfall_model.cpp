@@ -105,6 +105,29 @@ void WaterfallModel::clear() {
     emit imageChanged();
 }
 
+void WaterfallModel::setHeight(int height) {
+    const int newHeight = qMax(1, height);
+    if (newHeight == m_height) {
+        return;
+    }
+
+    QVector<float> newValues(m_width * newHeight, m_dbmMin);
+    const int copyHeight = qMin(m_height, newHeight);
+    if (!m_values.isEmpty()) {
+        for (int y = 0; y < copyHeight; ++y) {
+            std::memcpy(newValues.data() + y * m_width,
+                        m_values.constData() + y * m_width,
+                        sizeof(float) * m_width);
+        }
+    }
+
+    m_height = newHeight;
+    m_values.swap(newValues);
+    m_image = QImage(m_width, m_height, QImage::Format_ARGB32);
+    rebuildImage();
+    emit sizeChanged();
+}
+
 float WaterfallModel::valueAt(int x, int y) const {
     if (m_values.isEmpty()) {
         return m_dbmMin;
