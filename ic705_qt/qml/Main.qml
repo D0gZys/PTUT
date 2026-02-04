@@ -58,6 +58,8 @@ Window {
     property string csvWfTopTime: csvReplay.loaded ? csvReplay.currentTimestamp : "--"
     property string csvWfBottomTime: csvReplay.loaded ? csvReplay.timestampAt(wfBottomIndex) : "--"
     property bool csvMarkersEnabled: true
+    property string csvNextMarkerColor: "#00ff66"
+    property var csvMarkerColors: ["#00ff66", "#ff9900", "#00aaff", "#ff3366", "#ffffff"]
     property int maxSpectrumCursors: 2
 
     property string defaultRadioIp: "192.168.59.1"
@@ -376,7 +378,17 @@ Window {
                     Layout.fillWidth: true
                     spacing: 8
                     Button { text: csvReplay.playing ? "Pause" : "Play"; enabled: csvReplay.loaded; onClicked: csvReplay.togglePlay() }
-                    Button { text: "Jump to Max"; enabled: csvReplay.loaded; onClicked: jumpToMaxSignal() }
+                    Button {
+                        text: "Jump to Max"
+                        enabled: csvReplay.loaded
+                        onClicked: {
+                            if (!csvReplay.loaded) return
+                            var maxIndex = csvReplay.findMaxSignalIndex()
+                            if (maxIndex >= 0) {
+                                csvReplay.setIndex(maxIndex)
+                            }
+                        }
+                    }
                     Label { text: "Position:" }
                     Slider {
                         id: positionSlider
@@ -606,7 +618,7 @@ Window {
                                             property real selEndX: 0
                                             property real selEndY: 0
 
-                                            onPressed: {
+                                            onPressed: function(mouse) {
                                                 if (!csvZoomMode) return
                                                 zoomSelecting = true
                                                 selStartX = mouse.x
@@ -614,12 +626,12 @@ Window {
                                                 selEndX = mouse.x
                                                 selEndY = mouse.y
                                             }
-                                            onPositionChanged: {
+                                            onPositionChanged: function(mouse) {
                                                 if (!zoomSelecting) return
                                                 selEndX = mouse.x
                                                 selEndY = mouse.y
                                             }
-                                            onReleased: {
+                                            onReleased: function(mouse) {
                                                 if (!zoomSelecting) return
                                                 zoomSelecting = false
                                                 var dx = Math.abs(selEndX - selStartX)
@@ -633,15 +645,17 @@ Window {
                                                 var n1 = screenToNorm(right, bottom)
                                                 setZoomFromRect(n0.x, n0.y, n1.x, n1.y)
                                             }
-                                            onClicked: {
-                                                if (csvZoomMode || !csvMarkersEnabled) return
+                                            onClicked: function(mouse) {
+                                                if (csvZoomMode || !csvMarkersEnabled || !csvReplay.loaded) return
                                                 var n = screenToNorm(mouse.x, mouse.y)
+                                                var row = Math.round(n.y * (replayWaterfallModel.height - 1))
+                                                var frameIndex = csvReplay.currentIndex - row
+                                                if (frameIndex < 0 || frameIndex >= csvReplay.lineCount) return
                                                 var xIdx = Math.round(n.x * (replayWaterfallModel.width - 1))
-                                                var yIdx = Math.round(n.y * (replayWaterfallModel.height - 1))
-                                                var freq = csvFreqMin + (xIdx / (replayWaterfallModel.width - 1)) * (csvFreqMax - csvFreqMin)
-                                                var dbm = replayWaterfallModel.valueAt(xIdx, yIdx)
-                                                var timeText = csvReplay.loaded ? csvReplay.timestampAt(csvReplay.currentIndex - yIdx) : "CSV"
-                                                csvMarkersModel.append({ xr: n.x, yr: n.y, freq: freq, dbm: dbm, time: timeText })
+                                                var freq = csvFreqMin + n.x * (csvFreqMax - csvFreqMin)
+                                                var dbm = replayWaterfallModel.valueAt(xIdx, row)
+                                                var timeText = csvReplay.timestampAt(frameIndex)
+                                                csvMarkersModel.append({ xNorm: n.x, frameIndex: frameIndex, color: csvNextMarkerColor, freq: freq, dbm: dbm, time: timeText })
                                             }
                                         }
                                     
@@ -649,10 +663,19 @@ Window {
                                             model: csvMarkersModel
                                             delegate: Item {
                                                 anchors.fill: parent
-                                                property real px: mapZoomX(model.xr)
-                                                property real py: mapZoomY(model.yr)
-                                                Rectangle { x: px - 4; y: py; width: 9; height: 1; color: "#ffff00" }
-                                                Rectangle { x: px; y: py - 4; width: 1; height: 9; color: "#ffff00" }
+                                                property int row: csvReplay.currentIndex - model.frameIndex
+                                                property bool inView: row >= 0 && row < replayWaterfallModel.height
+                                                visible: inView
+                                                property real yNorm: replayWaterfallModel.height > 1 ? (row / (replayWaterfallModel.height - 1)) : 0
+                                                property real px: mapZoomX(model.xNorm)
+                                                property real py: mapZoomY(yNorm)
+                                                property real freq: model.freq !== undefined ? model.freq : (csvFreqMin + model.xNorm * (csvFreqMax - csvFreqMin))
+                                                property int xIdx: Math.round(model.xNorm * (replayWaterfallModel.width - 1))
+                                                property real dbm: model.dbm !== undefined ? model.dbm : (inView ? replayWaterfallModel.valueAt(xIdx, row) : 0)
+                                                property string timeText: model.time !== undefined ? model.time : (csvReplay.loaded ? csvReplay.timestampAt(model.frameIndex) : "")
+                                                property string markerColor: model.color ? model.color : "#00ff66"
+                                                Rectangle { x: px - 5; y: py - 1; width: 11; height: 2; color: markerColor }
+                                                Rectangle { x: px - 1; y: py - 5; width: 2; height: 11; color: markerColor }
                                                 Rectangle {
                                                     id: markerLabelBg
                                                     width: markerLabel.implicitWidth + 8
@@ -661,9 +684,19 @@ Window {
                                                     y: py + (py > parent.height * 0.6 ? -height - 6 : 6)
                                                     color: "#000000"
                                                     opacity: 0.75
-                                                    border.color: "#ffff00"
+                                                    border.color: markerColor
                                                     radius: 3
-                                                    Text { id: markerLabel; anchors.centerIn: parent; text: model.freq.toFixed(6) + " MHz  " + model.dbm.toFixed(1) + " dBm  " + model.time; color: "white"; font.pixelSize: 9 }
+                                                    Text { id: markerLabel; anchors.centerIn: parent; text: freq.toFixed(6) + " MHz\n" + dbm.toFixed(1) + " dBm\n" + timeText; color: "white"; font.pixelSize: 9 }
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: markerLabelBg
+                                                    acceptedButtons: Qt.RightButton
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: function(mouse) {
+                                                        if (mouse.button === Qt.RightButton) {
+                                                            csvMarkersModel.remove(index)
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -694,174 +727,216 @@ Window {
                         border.color: "#2a2a2a"
                         radius: 4
 
-                        ColumnLayout {
+                        ScrollView {
                             anchors.fill: parent
                             anchors.margins: 8
-                            spacing: 10
+                            ScrollBar.vertical.policy: ScrollBar.AlwaysOn
+                            clip: true
 
-                            GroupBox {
-                                title: "Spectre"
-                                Layout.fillWidth: true
+                            ColumnLayout {
+                                id: csvMenuContent
+                                width: parent.width
+                                spacing: 10
 
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 6
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Button {
-                                            text: "+"
-                                            enabled: spectrumCursorModel.count < maxSpectrumCursors
-                                            onClicked: addSpectrumCursor()
-                                        }
-                                        Button {
-                                            text: "-"
-                                            enabled: spectrumCursorModel.count > 0
-                                            onClicked: removeSpectrumCursor()
-                                        }
-                                        Label {
-                                            text: spectrumCursorModel.count + "/" + maxSpectrumCursors
-                                        }
+                                GroupBox {
+                                    title: "Info"
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 4
+                                        Label { text: "Start: " + (csvReplay.loaded ? csvReplay.timestampAt(0) : "--") }
+                                        Label { text: "End:   " + (csvReplay.loaded ? csvReplay.timestampAt(csvReplay.lineCount - 1) : "--") }
+                                        Label { text: "Center: " + csvCenterFreq.toFixed(6) + " MHz" }
+                                        Label { text: "Span:   " + csvSpanKhz.toFixed(2) + " kHz" }
+                                        Label { text: "Gain Min: " + (csvReplay.loaded ? csvReplay.fileMinDbm.toFixed(1) : "--") + " dBm" }
+                                        Label { text: "Gain Max: " + (csvReplay.loaded ? csvReplay.fileMaxDbm.toFixed(1) : "--") + " dBm" }
+                                        Label { text: "Gain Avg: " + (csvReplay.loaded ? csvReplay.fileAvgDbm.toFixed(1) : "--") + " dBm" }
                                     }
+                                }
 
-                                    Repeater {
-                                        model: spectrumCursorModel
-                                        delegate: ColumnLayout {
+                                GroupBox {
+                                    title: "Spectre"
+                                    Layout.fillWidth: true
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 6
+
+                                        RowLayout {
                                             Layout.fillWidth: true
-                                            spacing: 2
+                                            spacing: 6
+                                            Button {
+                                                text: "+"
+                                                enabled: spectrumCursorModel.count < maxSpectrumCursors
+                                                onClicked: addSpectrumCursor()
+                                            }
+                                            Button {
+                                                text: "-"
+                                                enabled: spectrumCursorModel.count > 0
+                                                onClicked: removeSpectrumCursor()
+                                            }
                                             Label {
-                                                text: "C" + (index + 1) +
-                                                      "  F=" + cursorFreq(model.xNorm).toFixed(6) + " MHz" +
-                                                      "  P=" + cursorDbm(model.xNorm).toFixed(1) + " dBm"
-                                                font.pixelSize: 10
+                                                text: spectrumCursorModel.count + "/" + maxSpectrumCursors
                                             }
                                         }
-                                    }
 
-                                    Label {
-                                        visible: spectrumCursorModel.count >= 2
-                                        text: spectrumCursorModel.count >= 2
-                                              ? ("Delta F=" + Math.abs(cursorFreq(spectrumCursorModel.get(1).xNorm) - cursorFreq(spectrumCursorModel.get(0).xNorm)).toFixed(6) + " MHz" +
-                                                 "  Delta P=" + Math.abs(cursorDbm(spectrumCursorModel.get(1).xNorm) - cursorDbm(spectrumCursorModel.get(0).xNorm)).toFixed(1) + " dB")
-                                              : ""
-                                        font.pixelSize: 10
-                                    }
-                                }
-                            }
+                                        Repeater {
+                                            model: spectrumCursorModel
+                                            delegate: ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                Label {
+                                                    text: "C" + (index + 1) +
+                                                          "  F=" + cursorFreq(model.xNorm).toFixed(6) + " MHz" +
+                                                          "  P=" + cursorDbm(model.xNorm).toFixed(1) + " dBm"
+                                                    font.pixelSize: 10
+                                                }
+                                            }
+                                        }
 
-                            GroupBox {
-                                title: "Gain (dBm)"
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 6
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Label { text: "Max"; Layout.preferredWidth: 40 }
-                                        Slider {
-                                            id: csvDbmMaxSlider
-                                            Layout.fillWidth: true
-                                            from: -160
-                                            to: -20
-                                            stepSize: 1
-                                            onMoved: {
-                                                var v = Math.max(value, replaySpectrumModel.dbmMin + 1)
-                                                replaySpectrumModel.dbmMax = v
-                                                replayWaterfallModel.dbmMax = v
-                                            }
-                                        }
-                                        Binding { target: csvDbmMaxSlider; property: "value"; value: replaySpectrumModel.dbmMax; when: !csvDbmMaxSlider.pressed }
-                                        Label { text: replaySpectrumModel.dbmMax.toFixed(0); Layout.preferredWidth: 36 }
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        Label { text: "Min"; Layout.preferredWidth: 40 }
-                                        Slider {
-                                            id: csvDbmMinSlider
-                                            Layout.fillWidth: true
-                                            from: -160
-                                            to: -20
-                                            stepSize: 1
-                                            onMoved: {
-                                                var v = Math.min(value, replaySpectrumModel.dbmMax - 1)
-                                                replaySpectrumModel.dbmMin = v
-                                                replayWaterfallModel.dbmMin = v
-                                            }
-                                        }
-                                        Binding { target: csvDbmMinSlider; property: "value"; value: replaySpectrumModel.dbmMin; when: !csvDbmMinSlider.pressed }
-                                        Label { text: replaySpectrumModel.dbmMin.toFixed(0); Layout.preferredWidth: 36 }
-                                    }
-                                    Button {
-                                        text: "Reset"
-                                        onClicked: {
-                                            replaySpectrumModel.dbmMin = -160
-                                            replaySpectrumModel.dbmMax = -80
-                                            replayWaterfallModel.dbmMin = -160
-                                            replayWaterfallModel.dbmMax = -80
+                                        Label {
+                                            visible: spectrumCursorModel.count >= 2
+                                            text: spectrumCursorModel.count >= 2
+                                                  ? ("Delta F=" + Math.abs(cursorFreq(spectrumCursorModel.get(1).xNorm) - cursorFreq(spectrumCursorModel.get(0).xNorm)).toFixed(6) + " MHz" +
+                                                     "  Delta P=" + Math.abs(cursorDbm(spectrumCursorModel.get(1).xNorm) - cursorDbm(spectrumCursorModel.get(0).xNorm)).toFixed(1) + " dB")
+                                                  : ""
+                                            font.pixelSize: 10
                                         }
                                     }
                                 }
-                            }
 
-                            GroupBox {
-                                title: "Zoom"
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 6
-                                    RowLayout {
-                                        Layout.fillWidth: true
+                                GroupBox {
+                                    title: "Gain (dBm)"
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        anchors.fill: parent
                                         spacing: 6
-                                        Button {
-                                            text: csvZoomMode ? "Zoom: ON" : "Zoom"
-                                            checkable: true
-                                            checked: csvZoomMode
-                                            onClicked: csvZoomMode = checked
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Label { text: "Max"; Layout.preferredWidth: 40 }
+                                            Slider {
+                                                id: csvDbmMaxSlider
+                                                Layout.fillWidth: true
+                                                from: -160
+                                                to: -20
+                                                stepSize: 1
+                                                onMoved: {
+                                                    var v = Math.max(value, replaySpectrumModel.dbmMin + 1)
+                                                    replaySpectrumModel.dbmMax = v
+                                                    replayWaterfallModel.dbmMax = v
+                                                }
+                                            }
+                                            Binding { target: csvDbmMaxSlider; property: "value"; value: replaySpectrumModel.dbmMax; when: !csvDbmMaxSlider.pressed }
+                                            Label { text: replaySpectrumModel.dbmMax.toFixed(0); Layout.preferredWidth: 36 }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Label { text: "Min"; Layout.preferredWidth: 40 }
+                                            Slider {
+                                                id: csvDbmMinSlider
+                                                Layout.fillWidth: true
+                                                from: -160
+                                                to: -20
+                                                stepSize: 1
+                                                onMoved: {
+                                                    var v = Math.min(value, replaySpectrumModel.dbmMax - 1)
+                                                    replaySpectrumModel.dbmMin = v
+                                                    replayWaterfallModel.dbmMin = v
+                                                }
+                                            }
+                                            Binding { target: csvDbmMinSlider; property: "value"; value: replaySpectrumModel.dbmMin; when: !csvDbmMinSlider.pressed }
+                                            Label { text: replaySpectrumModel.dbmMin.toFixed(0); Layout.preferredWidth: 36 }
                                         }
                                         Button {
                                             text: "Reset"
                                             onClicked: {
-                                                resetCsvZoom()
-                                                csvZoomMode = false
-                                            }
-                                        }
-                                    }
-                                    Label { text: "Drag a rectangle in waterfall to zoom"; font.pixelSize: 10 }
-                                    Label { text: "Esc to exit zoom mode"; font.pixelSize: 10 }
-                                }
-                            }
-
-                            GroupBox {
-                                title: "Markers"
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 6
-                                    CheckBox { text: csvMarkersEnabled ? "Markers ON" : "Markers OFF"; checked: csvMarkersEnabled; onToggled: csvMarkersEnabled = checked }
-                                    Button { text: "Clear markers"; onClicked: csvMarkersModel.clear() }
-                                }
-                            }
-
-                            GroupBox {
-                                title: "Export"
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 6
-                                    Button { text: "Export (TODO)"; enabled: false; ToolTip.visible: hovered; ToolTip.text: "Fonctionnalite en cours d'implementation" }
-                                }
-                            }
-
-                            Item { Layout.fillHeight: true }
+                                                replaySpectrumModel.dbmMin = -160
+                                                replaySpectrumModel.dbmMax = -80
+                                                replayWaterfallModel.dbmMin = -160
+                                                replayWaterfallModel.dbmMax = -80
                                             }
                                         }
                                     }
                                 }
+
+                                GroupBox {
+                                    title: "Zoom"
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 6
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Button {
+                                                text: csvZoomMode ? "Zoom: ON" : "Zoom"
+                                                checkable: true
+                                                checked: csvZoomMode
+                                                onClicked: csvZoomMode = checked
+                                            }
+                                            Button {
+                                                text: "Reset"
+                                                onClicked: {
+                                                    resetCsvZoom()
+                                                    csvZoomMode = false
+                                                }
+                                            }
+                                        }
+                                        Label { text: "Drag a rectangle in waterfall to zoom"; font.pixelSize: 10 }
+                                        Label { text: "Esc to exit zoom mode"; font.pixelSize: 10 }
+                                    }
+                                }
+
+                                GroupBox {
+                                    title: "Markers"
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 6
+                                        CheckBox { text: csvMarkersEnabled ? "Markers ON" : "Markers OFF"; checked: csvMarkersEnabled; onToggled: csvMarkersEnabled = checked }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Repeater {
+                                                model: csvMarkerColors
+                                                delegate: Rectangle {
+                                                    width: 16
+                                                    height: 16
+                                                    radius: 3
+                                                    color: modelData
+                                                    border.color: csvNextMarkerColor === modelData ? "#ffffff" : "#2a2a2a"
+                                                    border.width: csvNextMarkerColor === modelData ? 2 : 1
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        onClicked: csvNextMarkerColor = modelData
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Button { text: "Clear markers"; onClicked: csvMarkersModel.clear() }
+                                    }
+                                }
+
+                                GroupBox {
+                                    title: "Export"
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 6
+                                        Button { text: "Export (TODO)"; enabled: false; ToolTip.visible: hovered; ToolTip.text: "Fonctionnalite en cours d'implementation" }
+                                    }
+                                }
+
+                                Item { Layout.fillHeight: true }
                             }
                         }
+                    }
+
+            }
+        }
+    }
 
     FileDialog {
         id: csvFileDialog
@@ -925,4 +1000,5 @@ Window {
             csvReplay.setIndex(maxIndex)
         }
     }
+}
 }

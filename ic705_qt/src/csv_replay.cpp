@@ -18,7 +18,10 @@ CsvReplay::CsvReplay(QObject *parent)
       m_speed(1.0),
       m_currentFreqMHz(0.0),
       m_currentSpanKHz(0.0),
-      m_waterfallDepth(kWaterfallDepth) {
+      m_waterfallDepth(kWaterfallDepth),
+      m_fileMinDbm(-999.0),
+      m_fileMaxDbm(-999.0),
+      m_fileAvgDbm(-999.0) {
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &CsvReplay::next);
     updateTimer();
@@ -64,6 +67,18 @@ int CsvReplay::waterfallDepth() const {
     return m_waterfallDepth;
 }
 
+double CsvReplay::fileMinDbm() const {
+    return m_fileMinDbm;
+}
+
+double CsvReplay::fileMaxDbm() const {
+    return m_fileMaxDbm;
+}
+
+double CsvReplay::fileAvgDbm() const {
+    return m_fileAvgDbm;
+}
+
 bool CsvReplay::loadFile(const QString &path) {
     QString filePath = path.trimmed();
     if (filePath.startsWith("file:", Qt::CaseInsensitive)) {
@@ -96,6 +111,11 @@ bool CsvReplay::loadFile(const QString &path) {
     }
 
     QVector<Frame> frames;
+    double minDbm = 0.0;
+    double maxDbm = 0.0;
+    double sumDbm = 0.0;
+    qint64 countDbm = 0;
+    bool hasStats = false;
     while (!stream.atEnd()) {
         const QString line = stream.readLine().trimmed();
         if (line.isEmpty()) {
@@ -122,6 +142,15 @@ bool CsvReplay::loadFile(const QString &path) {
                 break;
             }
             samples.append(value);
+            if (!hasStats) {
+                minDbm = maxDbm = value;
+                hasStats = true;
+            } else {
+                if (value < minDbm) minDbm = value;
+                if (value > maxDbm) maxDbm = value;
+            }
+            sumDbm += value;
+            countDbm += 1;
         }
         if (samples.isEmpty()) {
             continue;
@@ -141,8 +170,18 @@ bool CsvReplay::loadFile(const QString &path) {
 
     m_frames = frames;
     m_loaded = true;
+    if (hasStats && countDbm > 0) {
+        m_fileMinDbm = minDbm;
+        m_fileMaxDbm = maxDbm;
+        m_fileAvgDbm = sumDbm / double(countDbm);
+    } else {
+        m_fileMinDbm = -999.0;
+        m_fileMaxDbm = -999.0;
+        m_fileAvgDbm = -999.0;
+    }
     emit loadedChanged();
     emit lineCountChanged();
+    emit fileStatsChanged();
     if (m_playing) {
         m_playing = false;
         emit playingChanged();
