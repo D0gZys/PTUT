@@ -69,6 +69,13 @@ Window {
     property string defaultRadioMac: "00:90:C7:13:CA:75"
 
     property string csvPath: ""
+    property bool csvExportUseCrop: false
+    property bool exportIncludeMarkers: true
+    property bool exportIncludeInfo: true
+    property real exportCropX0: 0.0
+    property real exportCropY0: 0.0
+    property real exportCropX1: 1.0
+    property real exportCropY1: 1.0
 
     ListModel { id: csvMarkersModel }
     ListModel { id: spectrumCursorModel }
@@ -178,6 +185,30 @@ Window {
         if (spectrumCursorModel.count > 0) {
             spectrumCursorModel.remove(spectrumCursorModel.count - 1)
         }
+    }
+
+    function resetExportCrop() {
+        exportCropX0 = 0.0
+        exportCropY0 = 0.0
+        exportCropX1 = 1.0
+        exportCropY1 = 1.0
+    }
+
+    function exportMarkersForImage() {
+        var out = []
+        for (var i = 0; i < csvMarkersModel.count; ++i) {
+            var m = csvMarkersModel.get(i)
+            var marker = {
+                xNorm: Number(m.xNorm),
+                frameIndex: Number(m.frameIndex),
+                color: m.color ? String(m.color) : "#00ff66"
+            }
+            if (m.freq !== undefined) marker.freq = Number(m.freq)
+            if (m.dbm !== undefined) marker.dbm = Number(m.dbm)
+            if (m.time !== undefined) marker.time = String(m.time)
+            out.push(marker)
+        }
+        return out
     }
 
     ColumnLayout {
@@ -417,6 +448,7 @@ Window {
                 }
 
                 Label { text: csvReplay.lastError; visible: csvReplay.lastError.length > 0; color: "#ff6666" }
+                Label { text: csvReplay.lastExportStatus; visible: csvReplay.lastExportStatus.length > 0; color: "#8fd18f" }
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -925,7 +957,20 @@ Window {
                                     ColumnLayout {
                                         anchors.fill: parent
                                         spacing: 6
-                                        Button { text: "Export (TODO)"; enabled: false; ToolTip.visible: hovered; ToolTip.text: "Fonctionnalite en cours d'implementation" }
+                                        Button {
+                                            text: "Exporter metadata (.json)"
+                                            enabled: csvReplay.loaded
+                                            onClicked: csvMetadataDialog.open()
+                                        }
+                                        Button {
+                                            text: "Exporter image"
+                                            enabled: csvReplay.loaded
+                                            onClicked: {
+                                                resetExportCrop()
+                                                csvReplay.generateExportPreview(replaySpectrumModel.dbmMin, replaySpectrumModel.dbmMax, 1200, 900)
+                                                exportPreviewDialog.open()
+                                            }
+                                        }
                                     }
                                 }
 
@@ -945,6 +990,287 @@ Window {
         onAccepted: {
             csvPath = csvFileDialog.selectedFile
             csvReplay.loadFile(csvPath)
+        }
+    }
+
+    FileDialog {
+        id: csvMetadataDialog
+        title: "Exporter metadata JSON"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: ["JSON files (*.json)", "All files (*)"]
+        onAccepted: csvReplay.exportMetadataJson(selectedFile)
+    }
+
+    FileDialog {
+        id: csvExportDialog
+        title: "Exporter waterfall"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "png"
+        nameFilters: ["PNG image (*.png)", "JPEG image (*.jpg *.jpeg)"]
+        onAccepted: {
+            var markers = exportMarkersForImage()
+            if (csvExportUseCrop) {
+                csvReplay.exportWaterfallImageCropWithMarkers(
+                    selectedFile,
+                    replaySpectrumModel.dbmMin,
+                    replaySpectrumModel.dbmMax,
+                    exportCropX0, exportCropY0, exportCropX1, exportCropY1,
+                    markers, exportIncludeMarkers,
+                    exportIncludeInfo, csvCenterFreq,
+                    (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
+                )
+            } else {
+                csvReplay.exportWaterfallImageWithMarkers(
+                    selectedFile,
+                    replaySpectrumModel.dbmMin,
+                    replaySpectrumModel.dbmMax,
+                    markers, exportIncludeMarkers,
+                    exportIncludeInfo, csvCenterFreq,
+                    (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
+                )
+            }
+        }
+    }
+
+    Dialog {
+        id: exportPreviewDialog
+        title: "Apercu export"
+        modal: true
+        width: Math.max(640, Math.min(900, (parent && parent.width > 0) ? parent.width - 40 : 900))
+        height: Math.max(420, Math.min(620, (parent && parent.height > 0) ? parent.height - 40 : 620))
+        padding: 10
+        standardButtons: Dialog.NoButton
+
+        property bool selecting: false
+        property real sx: 0
+        property real sy: 0
+        property real ex: 0
+        property real ey: 0
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            Label {
+                Layout.fillWidth: true
+                text: "Image source: " + csvReplay.exportImageWidth + "x" + csvReplay.exportImageHeight
+                font.pixelSize: 10
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "Selection rectangle: couper lignes (haut/bas) et colonnes (gauche/droite)."
+                font.pixelSize: 10
+            }
+            CheckBox {
+                id: exportMarkersCheck
+                Layout.fillWidth: true
+                text: "Markers"
+                checked: exportIncludeMarkers
+                onToggled: exportIncludeMarkers = checked
+            }
+            CheckBox {
+                id: exportInfoCheck
+                Layout.fillWidth: true
+                text: "Infos (Fc + Time)"
+                checked: exportIncludeInfo
+                onToggled: exportIncludeInfo = checked
+            }
+
+            Item {
+                id: previewContainer
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 220
+                clip: true
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#101820"
+                    border.color: "#2a2a2a"
+                    radius: 4
+                }
+
+                Flickable {
+                    id: previewFlick
+                    anchors.fill: parent
+                    clip: true
+                    contentWidth: previewSurface.width
+                    contentHeight: previewSurface.height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.horizontal: ScrollBar {}
+
+                    Item {
+                        id: previewSurface
+                        width: Math.max(1, csvReplay.exportImageWidth)
+                        height: Math.max(1, csvReplay.exportImageHeight)
+
+                        Image {
+                            id: previewImage
+                            anchors.fill: parent
+                            source: csvReplay.exportPreviewPath
+                            cache: false
+                            fillMode: Image.Stretch
+                        }
+
+                        Repeater {
+                            model: csvMarkersModel
+                            delegate: Item {
+                                anchors.fill: parent
+                                property bool canDraw: exportIncludeMarkers && csvReplay.lineCount > 0 && model.frameIndex >= 0 && model.frameIndex < csvReplay.lineCount
+                                visible: canDraw
+                                property real px: model.xNorm * previewSurface.width
+                                property real py: csvReplay.lineCount > 1
+                                                  ? (1.0 - (model.frameIndex / (csvReplay.lineCount - 1))) * previewSurface.height
+                                                  : (previewSurface.height * 0.5)
+                                property real freq: model.freq !== undefined ? model.freq : (csvFreqMin + model.xNorm * (csvFreqMax - csvFreqMin))
+                                property real dbm: model.dbm !== undefined ? model.dbm : 0
+                                property string timeText: model.time !== undefined ? model.time : ""
+                                property string markerColor: model.color ? model.color : "#00ff66"
+                                Rectangle { x: px - 5; y: py - 1; width: 11; height: 2; color: markerColor }
+                                Rectangle { x: px - 1; y: py - 5; width: 2; height: 11; color: markerColor }
+                                Rectangle {
+                                    id: previewMarkerLabelBg
+                                    width: previewMarkerLabel.implicitWidth + 8
+                                    height: previewMarkerLabel.implicitHeight + 4
+                                    x: px + (px > previewSurface.width * 0.6 ? -width - 6 : 6)
+                                    y: py + (py > previewSurface.height * 0.6 ? -height - 6 : 6)
+                                    color: "#000000"
+                                    opacity: 0.75
+                                    border.color: markerColor
+                                    radius: 3
+                                    Text {
+                                        id: previewMarkerLabel
+                                        anchors.centerIn: parent
+                                        text: freq.toFixed(6) + " MHz\n" + dbm.toFixed(1) + " dBm\n" + timeText
+                                        color: "white"
+                                        font.pixelSize: 9
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: exportInfoOverlay
+                            visible: exportIncludeInfo
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 24
+                            color: "#bf000000"
+                            border.color: "#ffffff"
+                            border.width: 1
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left
+                                anchors.leftMargin: 8
+                                anchors.right: parent.right
+                                anchors.rightMargin: 8
+                                color: "white"
+                                font.pixelSize: 13
+                                elide: Text.ElideRight
+                                text: "Fc: " + csvCenterFreq.toFixed(6) + " MHz    Time: " +
+                                      (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
+                            }
+                        }
+
+                        Rectangle {
+                            id: exportSelection
+                            visible: exportPreviewDialog.selecting || exportCropX0 > 0.0 || exportCropY0 > 0.0 || exportCropX1 < 1.0 || exportCropY1 < 1.0
+                            x: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex) : exportCropX0 * previewSurface.width
+                            y: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey) : exportCropY0 * previewSurface.height
+                            width: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ex - exportPreviewDialog.sx) : (exportCropX1 - exportCropX0) * previewSurface.width
+                            height: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ey - exportPreviewDialog.sy) : (exportCropY1 - exportCropY0) * previewSurface.height
+                            color: "#33ffffff"
+                            border.color: "#00ff66"
+                            border.width: 1
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: csvReplay.exportPreviewPath.length > 0
+                            onPressed: function(mouse) {
+                                exportPreviewDialog.selecting = true
+                                exportPreviewDialog.sx = mouse.x
+                                exportPreviewDialog.sy = mouse.y
+                                exportPreviewDialog.ex = mouse.x
+                                exportPreviewDialog.ey = mouse.y
+                            }
+                            onPositionChanged: function(mouse) {
+                                if (!exportPreviewDialog.selecting) return
+                                exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
+                                exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
+                            }
+                            onReleased: function(mouse) {
+                                if (!exportPreviewDialog.selecting) return
+                                exportPreviewDialog.selecting = false
+                                exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
+                                exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
+
+                                var left = Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex)
+                                var right = Math.max(exportPreviewDialog.sx, exportPreviewDialog.ex)
+                                var top = Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey)
+                                var bottom = Math.max(exportPreviewDialog.sy, exportPreviewDialog.ey)
+                                if ((right - left) > 4 && (bottom - top) > 4) {
+                                    exportCropX0 = left / width
+                                    exportCropX1 = right / width
+                                    exportCropY0 = top / height
+                                    exportCropY1 = bottom / height
+                                } else {
+                                    resetExportCrop()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        footer: Rectangle {
+            implicitHeight: 56
+            color: "#f2f2f2"
+            border.color: "#d0d0d0"
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
+
+                Button {
+                    text: "Reset zone"
+                    onClicked: {
+                        resetExportCrop()
+                        exportPreviewDialog.selecting = false
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "Exporter complet"
+                    enabled: csvReplay.loaded
+                    onClicked: {
+                        csvExportUseCrop = false
+                        csvExportDialog.open()
+                    }
+                }
+
+                Button {
+                    text: "Exporter zone"
+                    enabled: csvReplay.loaded
+                    onClicked: {
+                        csvExportUseCrop = true
+                        csvExportDialog.open()
+                    }
+                }
+
+                Button {
+                    text: "Fermer"
+                    onClicked: exportPreviewDialog.close()
+                }
+            }
         }
     }
 

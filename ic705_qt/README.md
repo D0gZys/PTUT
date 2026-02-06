@@ -79,13 +79,25 @@ L application QML est organisee en deux onglets independants:
 - Navigation (debut/fin, prev/next)
 - Play/Pause, vitesse, slider de position
 - Spectre et waterfall
-- Panneau lateral: Gain min/max, Markers, Export (placeholder)
+- Panneau lateral: Info, Gain min/max, Markers, Export
 
 ## CSV - Format attendu
 ```
 timestamp,freq_mhz,span_khz,ref_level_dbm,dbm_0,dbm_1,...,dbm_474
 14:32:15.123456,143.049000,2.5,-77,-158.5,-157.0,...,-155.0
 ```
+
+## Export metadata JSON (Replay)
+Le mode CSV Replay permet d exporter un fichier metadata (`.json`) sans modifier le CSV source.
+
+Schema actuel (`schema_version = ic705_qt_metadata_v1`):
+- `generated_utc`
+- `source_csv`
+- `capture`: `frames`, `source_points_per_frame`, `replay_points_per_frame`, `resampled_for_replay`, `timestamp_start`, `timestamp_end`
+- `frequency_mhz`: `start`, `end`, `min`, `max`, `avg`
+- `span_khz`: `start`, `end`, `min`, `max`, `avg`
+- `ref_level_dbm`: `start`, `end`, `min`, `max`, `avg`
+- `dbm_samples`: `min`, `max`, `avg`
 
 ## Architecture logicielle (resume)
 
