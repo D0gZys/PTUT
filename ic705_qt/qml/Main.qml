@@ -52,6 +52,7 @@ Window {
 
     property real defaultFreq: 7.1
     property real defaultSpanKhz: 5.0
+    property var liveSpanOptionsKhz: [2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]
 
     property real liveCenterFreq: civClient.freqMHz > 0 ? civClient.freqMHz : defaultFreq
     property real liveSpanKhz: defaultSpanKhz
@@ -124,6 +125,7 @@ Window {
     property string defaultRadioPass: "bouter20xx"
     property string defaultRadioName: "IC-705-7"
     property string defaultRadioMac: "00:90:C7:13:CA:75"
+    property string liveFreqUnit: "MHz"
 
     property string csvPath: ""
     property bool csvExportUseCrop: false
@@ -430,6 +432,69 @@ Window {
         return false
     }
 
+    function applyLiveFrequencyEdit() {
+        var raw = (liveFreqField.text || "").trim().replace(/,/g, ".")
+        var value = Number(raw)
+        if (!isFinite(value) || value <= 0.0) {
+            liveFreqField.text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+            return
+        }
+        var valueMHz = toMHz(value, liveFreqUnit)
+        if (!isFinite(valueMHz) || valueMHz <= 0.0) {
+            liveFreqField.text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+            return
+        }
+        if (!civClient.setFrequencyMHz(valueMHz)) {
+            return
+        }
+        liveFreqField.text = formatLiveFrequencyForUnit(valueMHz, liveFreqUnit)
+    }
+
+    function toMHz(value, unitText) {
+        if (unitText === "Hz") return value / 1000000.0
+        if (unitText === "kHz") return value / 1000.0
+        return value
+    }
+
+    function fromMHz(valueMHz, unitText) {
+        if (unitText === "Hz") return valueMHz * 1000000.0
+        if (unitText === "kHz") return valueMHz * 1000.0
+        return valueMHz
+    }
+
+    function frequencyDecimals(unitText) {
+        if (unitText === "Hz") return 0
+        if (unitText === "kHz") return 3
+        return 6
+    }
+
+    function formatLiveFrequencyForUnit(valueMHz, unitText) {
+        if (!(valueMHz > 0.0)) return ""
+        var unitValue = fromMHz(valueMHz, unitText)
+        return unitValue.toFixed(frequencyDecimals(unitText))
+    }
+
+    function spanOptionIndex(spanKhz) {
+        var bestIndex = 0
+        var bestErr = 1e30
+        for (var i = 0; i < liveSpanOptionsKhz.length; ++i) {
+            var err = Math.abs(Number(liveSpanOptionsKhz[i]) - spanKhz)
+            if (err < bestErr) {
+                bestErr = err
+                bestIndex = i
+            }
+        }
+        return bestIndex
+    }
+
+    function applyLiveSpanSelection() {
+        if (liveSpanCombo.currentIndex < 0 || liveSpanCombo.currentIndex >= liveSpanOptionsKhz.length) return
+        var spanKhz = Number(liveSpanOptionsKhz[liveSpanCombo.currentIndex])
+        if (!isFinite(spanKhz) || spanKhz <= 0) return
+        if (!civClient.setScopeSpanKHz(spanKhz)) return
+        liveSpanKhz = spanKhz
+    }
+
     function resetExportCrop() {
         exportCropX0 = 0.0
         exportCropY0 = 0.0
@@ -708,6 +773,59 @@ Window {
                         onClicked: civClient.connected ? civClient.disconnectFromHost() : connectDialog.open()
                     }
                     Button { text: "Start"; enabled: false }
+                    Label { text: "Freq:" }
+                    TextField {
+                        id: liveFreqField
+                        Layout.preferredWidth: 110
+                        enabled: civClient.connected
+                        inputMethodHints: Qt.ImhPreferNumbers
+                        Component.onCompleted: text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+                        onAccepted: applyLiveFrequencyEdit()
+                    }
+                    ComboBox {
+                        id: liveFreqUnitCombo
+                        model: ["Hz", "kHz", "MHz"]
+                        enabled: civClient.connected
+                        currentIndex: 2
+                        onCurrentTextChanged: {
+                            liveFreqUnit = currentText
+                            if (!liveFreqField.activeFocus) {
+                                liveFreqField.text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+                            }
+                        }
+                    }
+                    Connections {
+                        target: civClient
+                        function onFreqChanged() {
+                            if (!liveFreqField.activeFocus) {
+                                liveFreqField.text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+                            }
+                        }
+                        function onConnectedChanged() {
+                            if (!liveFreqField.activeFocus) {
+                                liveFreqField.text = formatLiveFrequencyForUnit(civClient.freqMHz, liveFreqUnit)
+                            }
+                            liveSpanKhz = civClient.spanKHz > 0 ? civClient.spanKHz : defaultSpanKhz
+                            liveSpanCombo.currentIndex = spanOptionIndex(liveSpanKhz)
+                        }
+                        function onSpanChanged() {
+                            liveSpanKhz = civClient.spanKHz > 0 ? civClient.spanKHz : liveSpanKhz
+                            liveSpanCombo.currentIndex = spanOptionIndex(liveSpanKhz)
+                        }
+                    }
+                    Button {
+                        text: "Appliquer"
+                        enabled: civClient.connected
+                        onClicked: applyLiveFrequencyEdit()
+                    }
+                    Label { text: "Span:" }
+                    ComboBox {
+                        id: liveSpanCombo
+                        enabled: civClient.connected
+                        model: liveSpanOptionsKhz.map(function(v) { return Number(v).toString() + " kHz" })
+                        currentIndex: spanOptionIndex(liveSpanKhz)
+                        onActivated: applyLiveSpanSelection()
+                    }
                     Label {
                         text: "Status: " + civClient.statusText + "  Freq: " + civClient.freqMHz.toFixed(3) + " MHz  Ref: " + civClient.refLevel + " dBm"
                         Layout.fillWidth: true

@@ -12,6 +12,7 @@ class CivClient : public QObject {
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
     Q_PROPERTY(double freqMHz READ freqMHz NOTIFY freqChanged)
+    Q_PROPERTY(double spanKHz READ spanKHz NOTIFY spanChanged)
     Q_PROPERTY(int refLevel READ refLevel NOTIFY refLevelChanged)
 
 public:
@@ -20,6 +21,7 @@ public:
     bool connected() const;
     QString statusText() const;
     double freqMHz() const;
+    double spanKHz() const;
     int refLevel() const;
 
     Q_INVOKABLE void connectToDefault();
@@ -29,11 +31,14 @@ public:
                                        const QString &radioName,
                                        const QString &radioMac);
     Q_INVOKABLE void disconnectFromHost();
+    Q_INVOKABLE bool setFrequencyMHz(double valueMHz);
+    Q_INVOKABLE bool setScopeSpanKHz(double valueKHz);
 
 signals:
     void connectedChanged();
     void statusTextChanged();
     void freqChanged();
+    void spanChanged();
     void refLevelChanged();
     void spectrumReady(const QVector<float> &samples);
 
@@ -54,5 +59,6 @@ private:
     bool m_connected;
     QString m_statusText;
     double m_freqMHz;
+    double m_spanKHz;
     int m_refLevel;
 };
