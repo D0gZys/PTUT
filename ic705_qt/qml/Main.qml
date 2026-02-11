@@ -82,8 +82,8 @@ Window {
 
     property int wfDepth: 200
     property int wfBottomIndex: Math.max(0, csvReplay.currentIndex - wfDepth + 1)
-    property string csvWfTopTime: csvReplay.loaded ? csvReplay.currentTimestamp : "--"
-    property string csvWfBottomTime: csvReplay.loaded ? csvReplay.timestampAt(wfBottomIndex) : "--"
+    property string csvWfTopTime: csvReplay.loaded ? shortTimestampLabel(csvReplay.currentTimestamp) : "--"
+    property string csvWfBottomTime: csvReplay.loaded ? shortTimestampLabel(csvReplay.timestampAt(wfBottomIndex)) : "--"
     property bool csvMarkersEnabled: false
     property string csvToolMode: "mouse"
     property string csvNextMarkerColor: "#00ff66"
@@ -944,17 +944,47 @@ Window {
                             Item {
                                 Layout.preferredWidth: 70
                                 Layout.fillHeight: true
-                                Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
-                                Label { text: dbmMax.toFixed(0); anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10 }
-                                Label { text: dbmMid.toFixed(0); anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10 }
-                                Label { text: dbmMin.toFixed(0); anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
+                                Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                Label { text: dbmMax.toFixed(0); anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                Label { text: dbmMid.toFixed(0); anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10; color: "white" }
+                                Label { text: dbmMin.toFixed(0); anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10; color: "white" }
                             }
 
-                            SpectrumItem {
-                                id: liveSpectrumDisplay
+                            Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                model: liveSpectrumModel
+
+                                SpectrumItem {
+                                    id: liveSpectrumDisplay
+                                    anchors.fill: parent
+                                    model: liveSpectrumModel
+                                }
+
+                                // Axis bars only (no label/layout changes)
+                                Rectangle { x: 0; y: 0; width: 1; height: parent.height; color: "#8ea2ba"; opacity: 0.8 }
+                                Rectangle { x: 0; y: parent.height - 1; width: parent.width; height: 1; color: "#8ea2ba"; opacity: 0.8 }
+                                Repeater {
+                                    model: 5
+                                    delegate: Rectangle {
+                                        width: 1
+                                        height: 6
+                                        color: "#8ea2ba"
+                                        opacity: 0.9
+                                        x: (index / 4) * (parent.width - 1)
+                                        y: parent.height - height
+                                    }
+                                }
+                                Repeater {
+                                    model: 5
+                                    delegate: Rectangle {
+                                        width: 6
+                                        height: 1
+                                        color: "#8ea2ba"
+                                        opacity: 0.9
+                                        x: 0
+                                        y: (index / 4) * (parent.height - 1)
+                                    }
+                                }
                             }
                         }
 
@@ -966,9 +996,9 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 0
-                                Label { text: liveFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10 }
-                                Label { text: liveCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10 }
-                                Label { text: liveFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10 }
+                                Label { text: liveFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10; color: "white" }
+                                Label { text: liveCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10; color: "white" }
+                                Label { text: liveFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10; color: "white" }
                             }
                         }
                     }
@@ -994,18 +1024,48 @@ Window {
                             Item {
                                 Layout.preferredWidth: 70
                                 Layout.fillHeight: true
-                                Label { text: "Temps"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
-                                Label { text: "--"; anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10 }
-                                Label { text: "--"; anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
+                                Label { text: ""; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                Label { text: "--"; anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                Label { text: "--"; anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10; color: "white" }
                             }
 
-                            WaterfallItem {
-                                id: liveWaterfallDisplay
+                            Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                model: liveWaterfallModel
-                                onHeightChanged: if (model) model.setHeight(Math.max(1, Math.round(height)))
-                                Component.onCompleted: if (model) model.setHeight(Math.max(1, Math.round(height)))
+
+                                WaterfallItem {
+                                    id: liveWaterfallDisplay
+                                    anchors.fill: parent
+                                    model: liveWaterfallModel
+                                    onHeightChanged: if (model) model.setHeight(Math.max(1, Math.round(height)))
+                                    Component.onCompleted: if (model) model.setHeight(Math.max(1, Math.round(height)))
+                                }
+
+                                // Axis bars only (no label/layout changes)
+                                Rectangle { x: 0; y: 0; width: 1; height: parent.height; color: "#8ea2ba"; opacity: 0.8 }
+                                Rectangle { x: 0; y: parent.height - 1; width: parent.width; height: 1; color: "#8ea2ba"; opacity: 0.8 }
+                                Repeater {
+                                    model: 5
+                                    delegate: Rectangle {
+                                        width: 1
+                                        height: 6
+                                        color: "#8ea2ba"
+                                        opacity: 0.9
+                                        x: (index / 4) * (parent.width - 1)
+                                        y: parent.height - height
+                                    }
+                                }
+                                Repeater {
+                                    model: 5
+                                    delegate: Rectangle {
+                                        width: 6
+                                        height: 1
+                                        color: "#8ea2ba"
+                                        opacity: 0.9
+                                        x: 0
+                                        y: (index / 4) * (parent.height - 1)
+                                    }
+                                }
                             }
                         }
 
@@ -1017,9 +1077,9 @@ Window {
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 0
-                                Label { text: liveFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10 }
-                                Label { text: liveCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10 }
-                                Label { text: liveFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10 }
+                                Label { text: liveFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10; color: "white" }
+                                Label { text: liveCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10; color: "white" }
+                                Label { text: liveFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10; color: "white" }
                             }
                         }
                     }
@@ -1118,10 +1178,10 @@ Window {
                                     Item {
                                         Layout.preferredWidth: 70
                                         Layout.fillHeight: true
-                                        Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
-                                        Label { text: csvDbmMax.toFixed(0); anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10 }
-                                        Label { text: csvDbmMid.toFixed(0); anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10 }
-                                        Label { text: csvDbmMin.toFixed(0); anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
+                                        Label { text: "dBm"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvDbmMax.toFixed(0); anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvDbmMid.toFixed(0); anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvDbmMin.toFixed(0); anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10; color: "white" }
                                     }
                                     Item {
                                         id: csvSpectrumArea
@@ -1132,6 +1192,32 @@ Window {
                                             id: csvSpectrumDisplay
                                             anchors.fill: parent
                                             model: replaySpectrumModel
+                                        }
+
+                                        // Axis bars only (no label/layout changes)
+                                        Rectangle { x: 0; y: 0; width: 1; height: parent.height; color: "#8ea2ba"; opacity: 0.8 }
+                                        Rectangle { x: 0; y: parent.height - 1; width: parent.width; height: 1; color: "#8ea2ba"; opacity: 0.8 }
+                                        Repeater {
+                                            model: 5
+                                            delegate: Rectangle {
+                                                width: 1
+                                                height: 6
+                                                color: "#8ea2ba"
+                                                opacity: 0.9
+                                                x: (index / 4) * (parent.width - 1)
+                                                y: parent.height - height
+                                            }
+                                        }
+                                        Repeater {
+                                            model: 5
+                                            delegate: Rectangle {
+                                                width: 6
+                                                height: 1
+                                                color: "#8ea2ba"
+                                                opacity: 0.9
+                                                x: 0
+                                                y: (index / 4) * (parent.height - 1)
+                                            }
                                         }
 
                                         Repeater {
@@ -1198,9 +1284,9 @@ Window {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         spacing: 0
-                                        Label { text: csvFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10 }
-                                        Label { text: csvCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10 }
-                                        Label { text: csvFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10 }
+                                        Label { text: csvFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10; color: "white" }
                                     }
                                 }
                             }
@@ -1225,9 +1311,9 @@ Window {
                                     Item {
                                         Layout.preferredWidth: 70
                                         Layout.fillHeight: true
-                                        Label { text: "Temps"; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10 }
-                                        Label { text: csvWfTopTime; anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10 }
-                                        Label { text: csvWfBottomTime; anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10 }
+                                        Label { text: ""; anchors.left: parent.left; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvWfTopTime; anchors.right: parent.right; anchors.top: parent.top; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvWfBottomTime; anchors.right: parent.right; anchors.bottom: parent.bottom; font.pixelSize: 10; color: "white" }
                                     }
                                     Item {
                                         id: csvWaterfallViewport
@@ -1252,6 +1338,32 @@ Window {
                                                 var h = Math.max(1, Math.round(height))
                                                 if (model) model.setHeight(h)
                                                 csvReplay.setWaterfallDepth(h)
+                                            }
+                                        }
+
+                                        // Axis bars only (no label/layout changes)
+                                        Rectangle { x: 0; y: 0; width: 1; height: parent.height; color: "#8ea2ba"; opacity: 0.8 }
+                                        Rectangle { x: 0; y: parent.height - 1; width: parent.width; height: 1; color: "#8ea2ba"; opacity: 0.8 }
+                                        Repeater {
+                                            model: 5
+                                            delegate: Rectangle {
+                                                width: 1
+                                                height: 6
+                                                color: "#8ea2ba"
+                                                opacity: 0.9
+                                                x: (index / 4) * (parent.width - 1)
+                                                y: parent.height - height
+                                            }
+                                        }
+                                        Repeater {
+                                            model: 5
+                                            delegate: Rectangle {
+                                                width: 6
+                                                height: 1
+                                                color: "#8ea2ba"
+                                                opacity: 0.9
+                                                x: 0
+                                                y: (index / 4) * (parent.height - 1)
                                             }
                                         }
                                     
@@ -1654,6 +1766,7 @@ Window {
                                                     y: yTop - 10
                                                     width: Math.max(30, measureLabelBg.x + measureLabelBg.width - x + 10)
                                                     height: Math.max(20, yBottom - yTop + 20)
+                                                    enabled: csvToolMode === "mouse"
                                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                                     hoverEnabled: true
                                                     preventStealing: true
@@ -1763,6 +1876,7 @@ Window {
                                                     y: Math.min(pyAnchor, pyDim) - 14
                                                     width: Math.max(24, xRight - xLeft + 20)
                                                     height: Math.max(28, Math.abs(pyDim - pyAnchor) + 28)
+                                                    enabled: csvToolMode === "mouse"
                                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                                     hoverEnabled: true
                                                     preventStealing: true
@@ -1932,6 +2046,7 @@ Window {
                                                     y: minY - 14
                                                     width: Math.max(28, maxX - minX + 28)
                                                     height: Math.max(28, maxY - minY + 28)
+                                                    enabled: csvToolMode === "mouse"
                                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                                     hoverEnabled: true
                                                     preventStealing: true
@@ -2002,9 +2117,9 @@ Window {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         spacing: 0
-                                        Label { text: csvFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10 }
-                                        Label { text: csvCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10 }
-                                        Label { text: csvFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10 }
+                                        Label { text: csvFreqMin.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignLeft; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvCenterFreq.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 10; color: "white" }
+                                        Label { text: csvFreqMax.toFixed(6); Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.pixelSize: 10; color: "white" }
                                     }
                                 }
                             }
