@@ -53,6 +53,7 @@ Window {
     property real defaultFreq: 7.1
     property real defaultSpanKhz: 5.0
     property var liveSpanOptionsKhz: [2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]
+    property int liveRfGain: 0
 
     property real liveCenterFreq: civClient.freqMHz > 0 ? civClient.freqMHz : defaultFreq
     property real liveSpanKhz: defaultSpanKhz
@@ -131,6 +132,8 @@ Window {
     property bool csvExportUseCrop: false
     property bool exportIncludeMarkers: true
     property bool exportIncludeInfo: true
+    property bool exportIncludeFreqAxis: false
+    property bool exportIncludeTimeAxis: false
     property real exportCropX0: 0.0
     property real exportCropY0: 0.0
     property real exportCropX1: 1.0
@@ -495,6 +498,15 @@ Window {
         liveSpanKhz = spanKhz
     }
 
+    function applyLiveRfGain(value) {
+        var v = Math.round(Number(value))
+        if (!isFinite(v)) return
+        if (v < 0) v = 0
+        if (v > 255) v = 255
+        liveRfGain = v
+        civClient.setRfGain(v)
+    }
+
     function resetExportCrop() {
         exportCropX0 = 0.0
         exportCropY0 = 0.0
@@ -507,6 +519,20 @@ Window {
         var iso = text.replace(" ", "T")
         var t = Date.parse(iso)
         return isNaN(t) ? NaN : t
+    }
+
+    function shortTimestampLabel(text) {
+        if (!text || text.length === 0) return "--"
+        var sep = text.indexOf(" ")
+        if (sep < 0) sep = text.indexOf("T")
+        if (sep >= 0 && sep + 1 < text.length) {
+            var tail = text.slice(sep + 1)
+            if (tail.endsWith("Z")) tail = tail.slice(0, tail.length - 1)
+            var dot = tail.indexOf(".")
+            if (dot > 0) tail = tail.slice(0, dot)
+            return tail
+        }
+        return text
     }
 
     function formatDeltaTimeMs(deltaMs) {
@@ -807,10 +833,18 @@ Window {
                             }
                             liveSpanKhz = civClient.spanKHz > 0 ? civClient.spanKHz : defaultSpanKhz
                             liveSpanCombo.currentIndex = spanOptionIndex(liveSpanKhz)
+                            if (!liveRfGainSlider.pressed) {
+                                liveRfGain = civClient.rfGain
+                            }
                         }
                         function onSpanChanged() {
                             liveSpanKhz = civClient.spanKHz > 0 ? civClient.spanKHz : liveSpanKhz
                             liveSpanCombo.currentIndex = spanOptionIndex(liveSpanKhz)
+                        }
+                        function onRfGainChanged() {
+                            if (!liveRfGainSlider.pressed) {
+                                liveRfGain = civClient.rfGain
+                            }
                         }
                     }
                     Button {
@@ -825,6 +859,28 @@ Window {
                         model: liveSpanOptionsKhz.map(function(v) { return Number(v).toString() + " kHz" })
                         currentIndex: spanOptionIndex(liveSpanKhz)
                         onActivated: applyLiveSpanSelection()
+                    }
+                    Label { text: "RF Gain:" }
+                    Slider {
+                        id: liveRfGainSlider
+                        enabled: civClient.connected
+                        from: 0
+                        to: 255
+                        stepSize: 1
+                        snapMode: Slider.SnapAlways
+                        Layout.preferredWidth: 150
+                        value: liveRfGain
+                        onMoved: applyLiveRfGain(value)
+                        onPressedChanged: {
+                            if (!pressed) {
+                                applyLiveRfGain(value)
+                            }
+                        }
+                    }
+                    Label {
+                        text: Math.round(liveRfGainSlider.value).toString()
+                        Layout.preferredWidth: 30
+                        horizontalAlignment: Text.AlignRight
                     }
                     Label {
                         text: "Status: " + civClient.statusText + "  Freq: " + civClient.freqMHz.toFixed(3) + " MHz  Ref: " + civClient.refLevel + " dBm"
@@ -2354,7 +2410,8 @@ Window {
                     replaySpectrumModel.dbmMax,
                     exportCropX0, exportCropY0, exportCropX1, exportCropY1,
                     markers, exportIncludeMarkers,
-                    exportIncludeInfo, csvCenterFreq,
+                    exportIncludeInfo, exportIncludeFreqAxis, exportIncludeTimeAxis,
+                    csvFreqMin, csvFreqMax, csvCenterFreq,
                     (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
                 )
             } else {
@@ -2363,7 +2420,8 @@ Window {
                     replaySpectrumModel.dbmMin,
                     replaySpectrumModel.dbmMax,
                     markers, exportIncludeMarkers,
-                    exportIncludeInfo, csvCenterFreq,
+                    exportIncludeInfo, exportIncludeFreqAxis, exportIncludeTimeAxis,
+                    csvFreqMin, csvFreqMax, csvCenterFreq,
                     (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
                 )
             }
@@ -2375,7 +2433,7 @@ Window {
         title: "Apercu export"
         modal: true
         width: Math.max(640, Math.min(900, (parent && parent.width > 0) ? parent.width - 40 : 900))
-        height: Math.max(420, Math.min(620, (parent && parent.height > 0) ? parent.height - 40 : 620))
+        height: Math.max(420, (parent && parent.height > 0) ? parent.height - 40 : (root.height - 40))
         padding: 10
         standardButtons: Dialog.NoButton
 
@@ -2384,6 +2442,64 @@ Window {
         property real sy: 0
         property real ex: 0
         property real ey: 0
+        property real previewZoomMin: 0.25
+        property real previewZoomMax: 6.0
+        property real previewZoom: 1.0
+        property real pinchLastScale: 1.0
+        property int previewAxisLeftWidth: exportIncludeTimeAxis ? 58 : 0
+        property int previewAxisBottomHeight: exportIncludeFreqAxis ? 24 : 0
+
+        function setPreviewZoom(v) {
+            var z = Math.max(previewZoomMin, Math.min(previewZoomMax, v))
+            previewZoom = z
+        }
+
+        function surfaceWidthForZoom(z) {
+            return Math.max(1, Math.round(csvReplay.exportImageWidth * z)) + previewAxisLeftWidth
+        }
+
+        function surfaceHeightForZoom(z) {
+            return Math.max(1, Math.round(csvReplay.exportImageHeight * z)) + previewAxisBottomHeight
+        }
+
+        function zoomAt(factor, viewX, viewY) {
+            if (!(factor > 0.0) || previewFlick.width <= 0 || previewFlick.height <= 0) return
+
+            var oldZoom = previewZoom
+            var newZoom = Math.max(previewZoomMin, Math.min(previewZoomMax, oldZoom * factor))
+            if (Math.abs(newZoom - oldZoom) < 0.0001) return
+
+            var oldSurfaceW = surfaceWidthForZoom(oldZoom)
+            var oldSurfaceH = surfaceHeightForZoom(oldZoom)
+            var oldContentW = Math.max(previewFlick.width, oldSurfaceW)
+            var oldContentH = Math.max(previewFlick.height, oldSurfaceH)
+            var oldSurfaceX = (oldContentW - oldSurfaceW) * 0.5
+            var oldSurfaceY = (oldContentH - oldSurfaceH) * 0.5
+
+            var ix = (previewFlick.contentX + viewX - oldSurfaceX) / oldSurfaceW
+            var iy = (previewFlick.contentY + viewY - oldSurfaceY) / oldSurfaceH
+
+            previewZoom = newZoom
+
+            var newSurfaceW = surfaceWidthForZoom(newZoom)
+            var newSurfaceH = surfaceHeightForZoom(newZoom)
+            var newContentW = Math.max(previewFlick.width, newSurfaceW)
+            var newContentH = Math.max(previewFlick.height, newSurfaceH)
+            var newSurfaceX = (newContentW - newSurfaceW) * 0.5
+            var newSurfaceY = (newContentH - newSurfaceH) * 0.5
+
+            var targetX = newSurfaceX + ix * newSurfaceW - viewX
+            var targetY = newSurfaceY + iy * newSurfaceH - viewY
+            var maxX = Math.max(0, newContentW - previewFlick.width)
+            var maxY = Math.max(0, newContentH - previewFlick.height)
+
+            previewFlick.contentX = Math.max(0, Math.min(maxX, targetX))
+            previewFlick.contentY = Math.max(0, Math.min(maxY, targetY))
+        }
+
+        onOpened: {
+            previewZoom = 1.0
+        }
 
         contentItem: ColumnLayout {
             spacing: 8
@@ -2398,164 +2514,380 @@ Window {
                 text: "Selection rectangle: couper lignes (haut/bas) et colonnes (gauche/droite)."
                 font.pixelSize: 10
             }
-            CheckBox {
-                id: exportMarkersCheck
-                Layout.fillWidth: true
-                text: "Markers"
-                checked: exportIncludeMarkers
-                onToggled: exportIncludeMarkers = checked
-            }
-            CheckBox {
-                id: exportInfoCheck
-                Layout.fillWidth: true
-                text: "Infos (Fc + Time)"
-                checked: exportIncludeInfo
-                onToggled: exportIncludeInfo = checked
-            }
-
-            Item {
-                id: previewContainer
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.minimumHeight: 220
-                clip: true
+                spacing: 10
 
                 Rectangle {
-                    anchors.fill: parent
-                    color: "#101820"
-                    border.color: "#2a2a2a"
+                    Layout.preferredWidth: 190
+                    Layout.fillHeight: true
+                    color: "#f5f5f5"
+                    border.color: "#d0d0d0"
                     radius: 4
-                }
 
-                Flickable {
-                    id: previewFlick
-                    anchors.fill: parent
-                    clip: true
-                    contentWidth: previewSurface.width
-                    contentHeight: previewSurface.height
-                    boundsBehavior: Flickable.StopAtBounds
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 8
 
-                    ScrollBar.vertical: ScrollBar {}
-                    ScrollBar.horizontal: ScrollBar {}
-
-                    Item {
-                        id: previewSurface
-                        width: Math.max(1, csvReplay.exportImageWidth)
-                        height: Math.max(1, csvReplay.exportImageHeight)
-
-                        Image {
-                            id: previewImage
-                            anchors.fill: parent
-                            source: csvReplay.exportPreviewPath
-                            cache: false
-                            fillMode: Image.Stretch
+                        Label {
+                            text: "Options d'affichage"
+                            font.bold: true
                         }
-
-                        Repeater {
-                            model: csvMarkersModel
-                            delegate: Item {
-                                anchors.fill: parent
-                                property bool canDraw: exportIncludeMarkers && csvReplay.lineCount > 0 && model.frameIndex >= 0 && model.frameIndex < csvReplay.lineCount
-                                visible: canDraw
-                                property real px: model.xNorm * previewSurface.width
-                                property real py: csvReplay.lineCount > 1
-                                                  ? (1.0 - (model.frameIndex / (csvReplay.lineCount - 1))) * previewSurface.height
-                                                  : (previewSurface.height * 0.5)
-                                property real freq: model.freq !== undefined ? model.freq : (csvFreqMin + model.xNorm * (csvFreqMax - csvFreqMin))
-                                property real dbm: model.dbm !== undefined ? model.dbm : 0
-                                property string timeText: model.time !== undefined ? model.time : ""
-                                property string markerColor: model.color ? model.color : "#00ff66"
-                                Rectangle { x: px - 5; y: py - 1; width: 11; height: 2; color: markerColor }
-                                Rectangle { x: px - 1; y: py - 5; width: 2; height: 11; color: markerColor }
-                                Rectangle {
-                                    id: previewMarkerLabelBg
-                                    width: previewMarkerLabel.implicitWidth + 8
-                                    height: previewMarkerLabel.implicitHeight + 4
-                                    x: px + (px > previewSurface.width * 0.6 ? -width - 6 : 6)
-                                    y: py + (py > previewSurface.height * 0.6 ? -height - 6 : 6)
-                                    color: "#000000"
-                                    opacity: 0.75
-                                    border.color: markerColor
-                                    radius: 3
-                                    Text {
-                                        id: previewMarkerLabel
-                                        anchors.centerIn: parent
-                                        text: freq.toFixed(6) + " MHz\n" + dbm.toFixed(1) + " dBm\n" + timeText
-                                        color: "white"
-                                        font.pixelSize: 9
+                        CheckBox {
+                            id: exportMarkersCheck
+                            Layout.fillWidth: true
+                            text: "Markers"
+                            checked: exportIncludeMarkers
+                            onToggled: exportIncludeMarkers = checked
+                        }
+                        CheckBox {
+                            id: exportInfoCheck
+                            Layout.fillWidth: true
+                            text: "Infos (Fc + Time)"
+                            checked: exportIncludeInfo
+                            onToggled: exportIncludeInfo = checked
+                        }
+                        CheckBox {
+                            id: exportFreqAxisCheck
+                            Layout.fillWidth: true
+                            text: "Axe frequence (bas)"
+                            checked: exportIncludeFreqAxis
+                            onToggled: exportIncludeFreqAxis = checked
+                        }
+                        CheckBox {
+                            id: exportTimeAxisCheck
+                            Layout.fillWidth: true
+                            text: "Axe temps (gauche)"
+                            checked: exportIncludeTimeAxis
+                            onToggled: exportIncludeTimeAxis = checked
+                        }
+                        Label {
+                            text: "Zoom preview"
+                            font.bold: true
+                            Layout.topMargin: 6
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Button {
+                                text: "-"
+                                Layout.preferredWidth: 34
+                                onClicked: exportPreviewDialog.setPreviewZoom(exportPreviewDialog.previewZoom / 1.25)
+                            }
+                            Slider {
+                                id: previewZoomSlider
+                                Layout.fillWidth: true
+                                from: exportPreviewDialog.previewZoomMin
+                                to: exportPreviewDialog.previewZoomMax
+                                stepSize: 0.05
+                                value: exportPreviewDialog.previewZoom
+                                onMoved: exportPreviewDialog.setPreviewZoom(value)
+                                onPressedChanged: {
+                                    if (!pressed) {
+                                        exportPreviewDialog.setPreviewZoom(value)
                                     }
                                 }
                             }
+                            Binding { target: previewZoomSlider; property: "value"; value: exportPreviewDialog.previewZoom; when: !previewZoomSlider.pressed }
+                            Button {
+                                text: "+"
+                                Layout.preferredWidth: 34
+                                onClicked: exportPreviewDialog.setPreviewZoom(exportPreviewDialog.previewZoom * 1.25)
+                            }
                         }
+                        Label {
+                            Layout.fillWidth: true
+                            text: Math.round(exportPreviewDialog.previewZoom * 100).toString() + " %"
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        Item { Layout.fillHeight: true }
+                    }
+                }
 
-                        Rectangle {
-                            id: exportInfoOverlay
-                            visible: exportIncludeInfo
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            height: 24
-                            color: "#bf000000"
-                            border.color: "#ffffff"
-                            border.width: 1
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.left: parent.left
-                                anchors.leftMargin: 8
-                                anchors.right: parent.right
-                                anchors.rightMargin: 8
-                                color: "white"
-                                font.pixelSize: 13
-                                elide: Text.ElideRight
-                                text: "Fc: " + csvCenterFreq.toFixed(6) + " MHz    Time: " +
-                                      (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
+                Item {
+                    id: previewContainer
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "#101820"
+                        border.color: "#2a2a2a"
+                        radius: 4
+                    }
+
+                    Flickable {
+                        id: previewFlick
+                        anchors.fill: parent
+                        clip: true
+                        contentWidth: Math.max(width, previewSurface.width)
+                        contentHeight: Math.max(height, previewSurface.height)
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        ScrollBar.vertical: ScrollBar {}
+                        ScrollBar.horizontal: ScrollBar {}
+
+                        PinchHandler {
+                            id: previewPinch
+                            target: null
+                            acceptedDevices: PointerDevice.TouchPad | PointerDevice.TouchScreen
+                            onActiveChanged: {
+                                exportPreviewDialog.pinchLastScale = 1.0
+                            }
+                            onScaleChanged: {
+                                if (!active) return
+                                var ratio = scale / exportPreviewDialog.pinchLastScale
+                                exportPreviewDialog.pinchLastScale = scale
+                                exportPreviewDialog.zoomAt(ratio, centroid.position.x, centroid.position.y)
                             }
                         }
 
-                        Rectangle {
-                            id: exportSelection
-                            visible: exportPreviewDialog.selecting || exportCropX0 > 0.0 || exportCropY0 > 0.0 || exportCropX1 < 1.0 || exportCropY1 < 1.0
-                            x: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex) : exportCropX0 * previewSurface.width
-                            y: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey) : exportCropY0 * previewSurface.height
-                            width: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ex - exportPreviewDialog.sx) : (exportCropX1 - exportCropX0) * previewSurface.width
-                            height: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ey - exportPreviewDialog.sy) : (exportCropY1 - exportCropY0) * previewSurface.height
-                            color: "#33ffffff"
-                            border.color: "#00ff66"
-                            border.width: 1
+                        WheelHandler {
+                            id: previewWheelZoom
+                            target: null
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            acceptedModifiers: Qt.ControlModifier
+                            onWheel: function(event) {
+                                var dy = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
+                                if (dy === 0) return
+                                var factor = dy > 0 ? 1.12 : (1.0 / 1.12)
+                                exportPreviewDialog.zoomAt(factor, event.point.position.x, event.point.position.y)
+                                event.accepted = true
+                            }
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            enabled: csvReplay.exportPreviewPath.length > 0
-                            onPressed: function(mouse) {
-                                exportPreviewDialog.selecting = true
-                                exportPreviewDialog.sx = mouse.x
-                                exportPreviewDialog.sy = mouse.y
-                                exportPreviewDialog.ex = mouse.x
-                                exportPreviewDialog.ey = mouse.y
-                            }
-                            onPositionChanged: function(mouse) {
-                                if (!exportPreviewDialog.selecting) return
-                                exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
-                                exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
-                            }
-                            onReleased: function(mouse) {
-                                if (!exportPreviewDialog.selecting) return
-                                exportPreviewDialog.selecting = false
-                                exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
-                                exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
+                        Item {
+                            id: previewSurface
+                            x: (previewFlick.contentWidth - width) / 2
+                            y: (previewFlick.contentHeight - height) / 2
+                            property int imageWidth: Math.max(1, Math.round(csvReplay.exportImageWidth * exportPreviewDialog.previewZoom))
+                            property int imageHeight: Math.max(1, Math.round(csvReplay.exportImageHeight * exportPreviewDialog.previewZoom))
+                            property int axisLeftWidth: exportPreviewDialog.previewAxisLeftWidth
+                            property int axisBottomHeight: exportPreviewDialog.previewAxisBottomHeight
+                            width: imageWidth + axisLeftWidth
+                            height: imageHeight + axisBottomHeight
 
-                                var left = Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex)
-                                var right = Math.max(exportPreviewDialog.sx, exportPreviewDialog.ex)
-                                var top = Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey)
-                                var bottom = Math.max(exportPreviewDialog.sy, exportPreviewDialog.ey)
-                                if ((right - left) > 4 && (bottom - top) > 4) {
-                                    exportCropX0 = left / width
-                                    exportCropX1 = right / width
-                                    exportCropY0 = top / height
-                                    exportCropY1 = bottom / height
-                                } else {
-                                    resetExportCrop()
+                            Item {
+                                id: previewImageArea
+                                x: previewSurface.axisLeftWidth
+                                y: 0
+                                width: previewSurface.imageWidth
+                                height: previewSurface.imageHeight
+
+                                Image {
+                                    id: previewImage
+                                    anchors.fill: parent
+                                    source: csvReplay.exportPreviewPath
+                                    cache: false
+                                    fillMode: Image.Stretch
+                                }
+
+                                Repeater {
+                                    model: csvMarkersModel
+                                    delegate: Item {
+                                        anchors.fill: parent
+                                        property bool canDraw: exportIncludeMarkers && csvReplay.lineCount > 0 && model.frameIndex >= 0 && model.frameIndex < csvReplay.lineCount
+                                        visible: canDraw
+                                        property real px: model.xNorm * previewImageArea.width
+                                        property real py: csvReplay.lineCount > 1
+                                                          ? (1.0 - (model.frameIndex / (csvReplay.lineCount - 1))) * previewImageArea.height
+                                                          : (previewImageArea.height * 0.5)
+                                        property real freq: model.freq !== undefined ? model.freq : (csvFreqMin + model.xNorm * (csvFreqMax - csvFreqMin))
+                                        property real dbm: model.dbm !== undefined ? model.dbm : 0
+                                        property string timeText: model.time !== undefined ? model.time : ""
+                                        property string markerColor: model.color ? model.color : "#00ff66"
+                                        Rectangle { x: px - 5; y: py - 1; width: 11; height: 2; color: markerColor }
+                                        Rectangle { x: px - 1; y: py - 5; width: 2; height: 11; color: markerColor }
+                                        Rectangle {
+                                            id: previewMarkerLabelBg
+                                            width: previewMarkerLabel.implicitWidth + 8
+                                            height: previewMarkerLabel.implicitHeight + 4
+                                            x: px + (px > previewImageArea.width * 0.6 ? -width - 6 : 6)
+                                            y: py + (py > previewImageArea.height * 0.6 ? -height - 6 : 6)
+                                            color: "#000000"
+                                            opacity: 0.75
+                                            border.color: markerColor
+                                            radius: 3
+                                            Text {
+                                                id: previewMarkerLabel
+                                                anchors.centerIn: parent
+                                                text: freq.toFixed(6) + " MHz\n" + dbm.toFixed(1) + " dBm\n" + timeText
+                                                color: "white"
+                                                font.pixelSize: 9
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: exportInfoOverlay
+                                    visible: exportIncludeInfo
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: 24
+                                    color: "#bf000000"
+                                    border.color: "#ffffff"
+                                    border.width: 1
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 8
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 8
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                        text: "Fc: " + csvCenterFreq.toFixed(6) + " MHz    Time: " +
+                                              (csvReplay.loaded ? (csvReplay.timestampAt(0) + " -> " + csvReplay.timestampAt(csvReplay.lineCount - 1)) : "--")
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: exportSelection
+                                    visible: exportPreviewDialog.selecting || exportCropX0 > 0.0 || exportCropY0 > 0.0 || exportCropX1 < 1.0 || exportCropY1 < 1.0
+                                    x: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex) : exportCropX0 * previewImageArea.width
+                                    y: exportPreviewDialog.selecting ? Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey) : exportCropY0 * previewImageArea.height
+                                    width: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ex - exportPreviewDialog.sx) : (exportCropX1 - exportCropX0) * previewImageArea.width
+                                    height: exportPreviewDialog.selecting ? Math.abs(exportPreviewDialog.ey - exportPreviewDialog.sy) : (exportCropY1 - exportCropY0) * previewImageArea.height
+                                    color: "#33ffffff"
+                                    border.color: "#00ff66"
+                                    border.width: 1
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: csvReplay.exportPreviewPath.length > 0
+                                    onPressed: function(mouse) {
+                                        exportPreviewDialog.selecting = true
+                                        exportPreviewDialog.sx = mouse.x
+                                        exportPreviewDialog.sy = mouse.y
+                                        exportPreviewDialog.ex = mouse.x
+                                        exportPreviewDialog.ey = mouse.y
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (!exportPreviewDialog.selecting) return
+                                        exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
+                                        exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
+                                    }
+                                    onReleased: function(mouse) {
+                                        if (!exportPreviewDialog.selecting) return
+                                        exportPreviewDialog.selecting = false
+                                        exportPreviewDialog.ex = Math.max(0, Math.min(width, mouse.x))
+                                        exportPreviewDialog.ey = Math.max(0, Math.min(height, mouse.y))
+
+                                        var left = Math.min(exportPreviewDialog.sx, exportPreviewDialog.ex)
+                                        var right = Math.max(exportPreviewDialog.sx, exportPreviewDialog.ex)
+                                        var top = Math.min(exportPreviewDialog.sy, exportPreviewDialog.ey)
+                                        var bottom = Math.max(exportPreviewDialog.sy, exportPreviewDialog.ey)
+                                        if ((right - left) > 4 && (bottom - top) > 4) {
+                                            exportCropX0 = left / width
+                                            exportCropX1 = right / width
+                                            exportCropY0 = top / height
+                                            exportCropY1 = bottom / height
+                                        } else {
+                                            resetExportCrop()
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                id: exportTimeAxisOverlay
+                                visible: exportIncludeTimeAxis
+                                x: 0
+                                y: 0
+                                width: previewSurface.axisLeftWidth
+                                height: previewSurface.imageHeight
+                                color: "#b0000000"
+                                border.color: "#d8d8d8"
+                                border.width: 1
+
+                                Repeater {
+                                    model: 5
+                                    delegate: Item {
+                                        property real t: index / 4.0
+                                        property real yTick: t * (exportTimeAxisOverlay.height - 1)
+                                        property int frameIdx: {
+                                            if (!csvReplay.loaded || csvReplay.lineCount <= 1) return 0
+                                            return Math.round((csvReplay.lineCount - 1) * (1.0 - t))
+                                        }
+                                        Rectangle {
+                                            x: exportTimeAxisOverlay.width - 6
+                                            y: yTick
+                                            width: 6
+                                            height: 1
+                                            color: "#d8d8d8"
+                                        }
+                                        Text {
+                                            x: 3
+                                            y: yTick - (height * 0.5)
+                                            width: Math.max(8, exportTimeAxisOverlay.width - 9)
+                                            horizontalAlignment: Text.AlignRight
+                                            color: "white"
+                                            font.pixelSize: 9
+                                            elide: Text.ElideRight
+                                            text: csvReplay.loaded ? shortTimestampLabel(csvReplay.timestampAt(frameIdx)) : "--"
+                                        }
+                                    }
+                                }
+                                Text {
+                                    id: exportTimeAxisLabel
+                                    text: "Time"
+                                    color: "white"
+                                    font.pixelSize: 8
+                                    x: 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    transformOrigin: Item.Center
+                                    rotation: -90
+                                }
+                            }
+
+                            Rectangle {
+                                id: exportFreqAxisOverlay
+                                visible: exportIncludeFreqAxis
+                                x: previewSurface.axisLeftWidth
+                                y: previewSurface.imageHeight
+                                width: previewSurface.imageWidth
+                                height: previewSurface.axisBottomHeight
+                                color: "#b0000000"
+                                border.color: "#d8d8d8"
+                                border.width: 1
+
+                                Repeater {
+                                    model: 5
+                                    delegate: Item {
+                                        property real t: index / 4.0
+                                        property real xTick: t * (exportFreqAxisOverlay.width - 1)
+                                        property real fMHz: csvFreqMin + t * (csvFreqMax - csvFreqMin)
+                                        Rectangle {
+                                            x: xTick
+                                            y: 0
+                                            width: 1
+                                            height: 5
+                                            color: "#d8d8d8"
+                                        }
+                                        Text {
+                                            y: 4
+                                            width: implicitWidth
+                                            x: Math.max(1, Math.min(exportFreqAxisOverlay.width - width - 1, xTick - (width * 0.5)))
+                                            color: "white"
+                                            font.pixelSize: 8
+                                            text: fMHz.toFixed(6)
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "MHz"
+                                    color: "white"
+                                    font.pixelSize: 8
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    anchors.bottom: parent.bottom
+                                    anchors.bottomMargin: 1
                                 }
                             }
                         }

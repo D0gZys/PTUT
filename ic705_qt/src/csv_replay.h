@@ -64,11 +64,15 @@ public:
                                               double x0Norm, double y0Norm, double x1Norm, double y1Norm);
     Q_INVOKABLE bool exportWaterfallImageWithMarkers(const QString &path, double dbmMin, double dbmMax,
                                                      const QVariantList &markers, bool includeMarkers,
-                                                     bool includeInfo, double centerFreqMHz, const QString &timestampText);
+                                                     bool includeInfo, bool includeFreqAxis, bool includeTimeAxis,
+                                                     double freqMinMHz, double freqMaxMHz,
+                                                     double centerFreqMHz, const QString &timestampText);
     Q_INVOKABLE bool exportWaterfallImageCropWithMarkers(const QString &path, double dbmMin, double dbmMax,
                                                          double x0Norm, double y0Norm, double x1Norm, double y1Norm,
                                                          const QVariantList &markers, bool includeMarkers,
-                                                         bool includeInfo, double centerFreqMHz, const QString &timestampText);
+                                                         bool includeInfo, bool includeFreqAxis, bool includeTimeAxis,
+                                                         double freqMinMHz, double freqMaxMHz,
+                                                         double centerFreqMHz, const QString &timestampText);
     Q_INVOKABLE bool exportMetadataJson(const QString &path);
     Q_INVOKABLE bool generateExportPreview(double dbmMin, double dbmMax, int maxWidth, int maxHeight);
 
@@ -103,9 +107,15 @@ private:
     void updateTimer();
     static QVector<float> resample(const QVector<float> &input, int targetSize);
     QImage buildWaterfallImage(float dbmMin, float dbmMax) const;
+    QRect normCropRect(const QSize &size, double x0Norm, double y0Norm, double x1Norm, double y1Norm) const;
     QImage cropByNorm(const QImage &source, double x0Norm, double y0Norm, double x1Norm, double y1Norm) const;
     void drawMarkersOnImage(QImage &image, const QVariantList &markers) const;
-    void drawInfoOnImage(QImage &image, double centerFreqMHz, const QString &timestampText) const;
+    int drawInfoOnImage(QImage &image, double centerFreqMHz, const QString &timestampText, int leftInset, int bottomInset) const;
+    void drawAxesOnImage(QImage &image, bool includeFreqAxis, bool includeTimeAxis,
+                         double freqMinMHz, double freqMaxMHz,
+                         int topFrameIndex, int bottomFrameIndex,
+                         int leftInset, int freqAxisHeight) const;
+    QString formatAxisTimeLabel(const QString &timestampText) const;
 
     QVector<Frame> m_frames;
     bool m_loaded;

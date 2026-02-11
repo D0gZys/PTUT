@@ -14,6 +14,7 @@ class CivClient : public QObject {
     Q_PROPERTY(double freqMHz READ freqMHz NOTIFY freqChanged)
     Q_PROPERTY(double spanKHz READ spanKHz NOTIFY spanChanged)
     Q_PROPERTY(int refLevel READ refLevel NOTIFY refLevelChanged)
+    Q_PROPERTY(int rfGain READ rfGain NOTIFY rfGainChanged)
 
 public:
     explicit CivClient(QObject *parent = nullptr);
@@ -23,6 +24,7 @@ public:
     double freqMHz() const;
     double spanKHz() const;
     int refLevel() const;
+    int rfGain() const;
 
     Q_INVOKABLE void connectToDefault();
     Q_INVOKABLE void connectWithParams(const QString &ip,
@@ -33,6 +35,7 @@ public:
     Q_INVOKABLE void disconnectFromHost();
     Q_INVOKABLE bool setFrequencyMHz(double valueMHz);
     Q_INVOKABLE bool setScopeSpanKHz(double valueKHz);
+    Q_INVOKABLE bool setRfGain(int value);
 
 signals:
     void connectedChanged();
@@ -40,6 +43,7 @@ signals:
     void freqChanged();
     void spanChanged();
     void refLevelChanged();
+    void rfGainChanged();
     void spectrumReady(const QVector<float> &samples);
 
 private:
@@ -61,4 +65,5 @@ private:
     double m_freqMHz;
     double m_spanKHz;
     int m_refLevel;
+    int m_rfGain;
 };

@@ -14,6 +14,8 @@
 #include <QtGlobal>
 #include <QTextStream>
 #include <QUrl>
+#include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr int kSpectrumWidth = 475;
@@ -492,26 +494,33 @@ int CsvReplay::findMaxSignalIndex() const {
 
 bool CsvReplay::exportWaterfallImage(const QString &path, double dbmMin, double dbmMax) {
     return exportWaterfallImageCropWithMarkers(path, dbmMin, dbmMax, 0.0, 0.0, 1.0, 1.0,
-                                               QVariantList(), false, false, 0.0, QString());
+                                               QVariantList(), false, false, false, false,
+                                               0.0, 0.0, 0.0, QString());
 }
 
 bool CsvReplay::exportWaterfallImageCrop(const QString &path, double dbmMin, double dbmMax,
                                          double x0Norm, double y0Norm, double x1Norm, double y1Norm) {
     return exportWaterfallImageCropWithMarkers(path, dbmMin, dbmMax, x0Norm, y0Norm, x1Norm, y1Norm,
-                                               QVariantList(), false, false, 0.0, QString());
+                                               QVariantList(), false, false, false, false,
+                                               0.0, 0.0, 0.0, QString());
 }
 
 bool CsvReplay::exportWaterfallImageWithMarkers(const QString &path, double dbmMin, double dbmMax,
                                                 const QVariantList &markers, bool includeMarkers,
-                                                bool includeInfo, double centerFreqMHz, const QString &timestampText) {
+                                                bool includeInfo, bool includeFreqAxis, bool includeTimeAxis,
+                                                double freqMinMHz, double freqMaxMHz,
+                                                double centerFreqMHz, const QString &timestampText) {
     return exportWaterfallImageCropWithMarkers(path, dbmMin, dbmMax, 0.0, 0.0, 1.0, 1.0,
-                                               markers, includeMarkers, includeInfo, centerFreqMHz, timestampText);
+                                               markers, includeMarkers, includeInfo, includeFreqAxis, includeTimeAxis,
+                                               freqMinMHz, freqMaxMHz, centerFreqMHz, timestampText);
 }
 
 bool CsvReplay::exportWaterfallImageCropWithMarkers(const QString &path, double dbmMin, double dbmMax,
                                                     double x0Norm, double y0Norm, double x1Norm, double y1Norm,
                                                     const QVariantList &markers, bool includeMarkers,
-                                                    bool includeInfo, double centerFreqMHz, const QString &timestampText) {
+                                                    bool includeInfo, bool includeFreqAxis, bool includeTimeAxis,
+                                                    double freqMinMHz, double freqMaxMHz,
+                                                    double centerFreqMHz, const QString &timestampText) {
     const QString filePath = normalizedPath(path);
     if (filePath.isEmpty()) {
         m_lastExportStatus = "Export failed: empty output path.";
@@ -542,14 +551,45 @@ bool CsvReplay::exportWaterfallImageCropWithMarkers(const QString &path, double 
         drawMarkersOnImage(fullImage, markers);
     }
 
-    QImage image = cropByNorm(fullImage, x0Norm, y0Norm, x1Norm, y1Norm);
-    if (image.isNull()) {
+    const QRect cropRect = normCropRect(fullImage.size(), x0Norm, y0Norm, x1Norm, y1Norm);
+    if (!cropRect.isValid() || cropRect.width() <= 0 || cropRect.height() <= 0) {
         m_lastExportStatus = "Export failed: invalid crop rectangle.";
         emit lastExportStatusChanged();
         return false;
     }
+
+    const QImage croppedImage = fullImage.copy(cropRect);
+    if (croppedImage.isNull()) {
+        m_lastExportStatus = "Export failed: invalid crop rectangle.";
+        emit lastExportStatusChanged();
+        return false;
+    }
+
+    const int sourceHeight = m_frames.size();
+    const int topFrameIndex = qBound(0, sourceHeight - 1 - cropRect.top(), sourceHeight - 1);
+    const int bottomFrameIndex = qBound(0, sourceHeight - 1 - cropRect.bottom(), sourceHeight - 1);
+
+    const int axisLeftInset = includeTimeAxis ? qBound(44, croppedImage.width() / 9, 72) : 0;
+    const int axisBottomHeight = includeFreqAxis ? qBound(22, croppedImage.height() / 12, 30) : 0;
+
+    QImage image(croppedImage.width() + axisLeftInset,
+                 croppedImage.height() + axisBottomHeight,
+                 QImage::Format_ARGB32);
+    image.fill(qRgb(0, 0, 0));
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        painter.drawImage(axisLeftInset, 0, croppedImage);
+    }
+
     if (includeInfo) {
-        drawInfoOnImage(image, centerFreqMHz, timestampText);
+        drawInfoOnImage(image, centerFreqMHz, timestampText, axisLeftInset, axisBottomHeight);
+    }
+    if (includeFreqAxis || includeTimeAxis) {
+        drawAxesOnImage(image, includeFreqAxis, includeTimeAxis,
+                        freqMinMHz, freqMaxMHz,
+                        topFrameIndex, bottomFrameIndex,
+                        axisLeftInset, axisBottomHeight);
     }
 
     bool ok = false;
@@ -574,9 +614,10 @@ bool CsvReplay::exportWaterfallImageCropWithMarkers(const QString &path, double 
     return true;
 }
 
-void CsvReplay::drawInfoOnImage(QImage &image, double centerFreqMHz, const QString &timestampText) const {
+int CsvReplay::drawInfoOnImage(QImage &image, double centerFreqMHz, const QString &timestampText,
+                               int leftInset, int bottomInset) const {
     if (image.isNull()) {
-        return;
+        return 0;
     }
 
     QPainter painter(&image);
@@ -594,12 +635,14 @@ void CsvReplay::drawInfoOnImage(QImage &image, double centerFreqMHz, const QStri
     const int padX = 6;
     const int padY = 4;
     const int margin = 8;
-    const int maxTextW = qMax(40, image.width() - (margin * 2) - (padX * 2));
+    const int leftMargin = qMax(margin, leftInset + margin);
+    const int maxTextW = qMax(40, image.width() - leftMargin - margin - (padX * 2));
     const QString fittedInfo = fm.elidedText(info, Qt::ElideRight, maxTextW);
-    const int boxW = qMin(fm.horizontalAdvance(fittedInfo) + padX * 2, qMax(1, image.width() - margin * 2));
+    const int boxW = qMin(fm.horizontalAdvance(fittedInfo) + padX * 2, qMax(1, image.width() - leftMargin - margin));
     const int boxH = fm.height() + padY * 2;
-    const int boxX = qBound(0, margin, qMax(0, image.width() - boxW));
-    const int boxY = qBound(0, image.height() - boxH - margin, qMax(0, image.height() - boxH));
+    const int boxX = qBound(0, leftMargin, qMax(0, image.width() - boxW - margin));
+    const int boxYBase = image.height() - boxH - margin - qMax(0, bottomInset);
+    const int boxY = qBound(0, boxYBase, qMax(0, image.height() - boxH));
     const QRect boxRect(boxX, boxY, qMin(boxW, image.width()), qMin(boxH, image.height()));
 
     painter.fillRect(boxRect, QColor(0, 0, 0, 190));
@@ -610,6 +653,168 @@ void CsvReplay::drawInfoOnImage(QImage &image, double centerFreqMHz, const QStri
 
     painter.setPen(Qt::white);
     painter.drawText(boxRect.x() + padX, boxRect.y() + padY + fm.ascent(), fittedInfo);
+
+    return image.height() - boxRect.y();
+}
+
+QString CsvReplay::formatAxisTimeLabel(const QString &timestampText) const {
+    QString raw = timestampText.trimmed();
+    if (raw.isEmpty()) {
+        return QStringLiteral("--");
+    }
+
+    QDateTime dt = QDateTime::fromString(raw, Qt::ISODateWithMs);
+    if (!dt.isValid()) {
+        dt = QDateTime::fromString(raw, Qt::ISODate);
+    }
+    if (dt.isValid()) {
+        return dt.time().toString("HH:mm:ss");
+    }
+
+    int sep = raw.indexOf(' ');
+    if (sep < 0) {
+        sep = raw.indexOf('T');
+    }
+    if (sep >= 0 && sep + 1 < raw.size()) {
+        QString tail = raw.mid(sep + 1);
+        if (tail.endsWith('Z')) {
+            tail.chop(1);
+        }
+        return tail;
+    }
+    return raw;
+}
+
+void CsvReplay::drawAxesOnImage(QImage &image, bool includeFreqAxis, bool includeTimeAxis,
+                                double freqMinMHz, double freqMaxMHz,
+                                int topFrameIndex, int bottomFrameIndex,
+                                int leftInset, int freqAxisHeight) const {
+    if (image.isNull()) {
+        return;
+    }
+    if (!includeFreqAxis && !includeTimeAxis) {
+        return;
+    }
+
+    const int leftAxisWidth = includeTimeAxis ? qBound(0, leftInset, qMax(0, image.width() - 12)) : 0;
+    const int freqAxisH = includeFreqAxis ? qBound(0, freqAxisHeight, qMax(0, image.height() - 12)) : 0;
+    QRect dataRect(leftAxisWidth, 0, image.width() - leftAxisWidth, image.height() - freqAxisH);
+    if (dataRect.width() < 12 || dataRect.height() < 12) {
+        return;
+    }
+
+    double f0 = freqMinMHz;
+    double f1 = freqMaxMHz;
+    if (!std::isfinite(f0) || !std::isfinite(f1) || std::abs(f1 - f0) < 1e-9) {
+        if (!m_frames.isEmpty()) {
+            const double center = m_frames.first().freqMHz;
+            const double spanMHz = m_frames.first().spanKHz / 1000.0;
+            f0 = center - spanMHz * 0.5;
+            f1 = center + spanMHz * 0.5;
+        } else {
+            f0 = 0.0;
+            f1 = 1.0;
+        }
+    }
+    if (f1 < f0) {
+        std::swap(f0, f1);
+    }
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    QFont font = painter.font();
+    font.setPixelSize(qBound(10, image.width() / 70, 15));
+    painter.setFont(font);
+    const QFontMetrics fm(font);
+    QFont unitFont = font;
+    unitFont.setPixelSize(qMax(8, font.pixelSize() - 2));
+    const QFontMetrics unitFm(unitFont);
+
+    const int tickCount = 5;
+    const QColor panelColor(0, 0, 0, 180);
+    const QColor lineColor("#d8d8d8");
+    const QColor textColor("#ffffff");
+
+    if (includeTimeAxis && leftAxisWidth > 0) {
+        const QRect axisRect(0, 0, leftAxisWidth, dataRect.height());
+        painter.fillRect(axisRect, panelColor);
+        painter.setPen(QPen(lineColor, 1));
+        painter.drawLine(axisRect.right(), dataRect.top(), axisRect.right(), dataRect.bottom());
+
+        for (int i = 0; i < tickCount; ++i) {
+            const double t = (tickCount == 1) ? 0.0 : (double(i) / double(tickCount - 1));
+            const int y = qRound(dataRect.top() + t * (dataRect.height() - 1));
+            painter.drawLine(axisRect.right() - 5, y, axisRect.right(), y);
+
+            const int frameIdx = qBound(0, qRound(topFrameIndex + t * (bottomFrameIndex - topFrameIndex)), m_frames.size() - 1);
+            const QString label = formatAxisTimeLabel(timestampAt(frameIdx));
+            const int labelW = fm.horizontalAdvance(label);
+            const int tx = qMax(2, axisRect.right() - 8 - labelW);
+            const int ty = qBound(fm.ascent() + 1, y - 2, axisRect.bottom() - 2);
+            painter.setPen(textColor);
+            painter.drawText(tx, ty, label);
+            painter.setPen(QPen(lineColor, 1));
+        }
+
+        painter.setFont(unitFont);
+        painter.setPen(textColor);
+        const QString timeTitle = QStringLiteral("Time");
+        const int textW = unitFm.horizontalAdvance(timeTitle);
+        const int textH = unitFm.height();
+        const int labelX = axisRect.left() + qMax(2, textH / 2);
+        const int labelY = axisRect.center().y();
+        painter.save();
+        painter.translate(labelX, labelY);
+        painter.rotate(-90.0);
+        painter.drawText(QRectF(-textW / 2.0, -textH / 2.0, textW, textH),
+                         Qt::AlignCenter, timeTitle);
+        painter.restore();
+        painter.setFont(font);
+    }
+
+    if (includeFreqAxis && freqAxisH > 0) {
+        const QRect axisRect(leftAxisWidth, image.height() - freqAxisH, image.width() - leftAxisWidth, freqAxisH);
+        painter.fillRect(axisRect, panelColor);
+        painter.setPen(QPen(lineColor, 1));
+        painter.drawLine(dataRect.left(), axisRect.top(), dataRect.right(), axisRect.top());
+
+        double span = std::abs(f1 - f0);
+        int decimals = 6;
+        if (span >= 1.0) {
+            decimals = 3;
+        } else if (span >= 0.1) {
+            decimals = 4;
+        } else if (span >= 0.01) {
+            decimals = 5;
+        }
+
+        for (int i = 0; i < tickCount; ++i) {
+            const double t = (tickCount == 1) ? 0.0 : (double(i) / double(tickCount - 1));
+            const int x = qRound(dataRect.left() + t * (dataRect.width() - 1));
+            painter.drawLine(x, axisRect.top(), x, axisRect.top() + 5);
+
+            const double value = f0 + (f1 - f0) * t;
+            const QString label = QString::number(value, 'f', decimals);
+            const int labelW = fm.horizontalAdvance(label);
+            int tx = x - (labelW / 2);
+            tx = qBound(axisRect.left() + 2, tx, axisRect.right() - labelW - 2);
+            const int ty = qBound(axisRect.top() + fm.ascent() + 4,
+                                  axisRect.top() + fm.ascent() + 4,
+                                  axisRect.bottom() - unitFm.height() - 4);
+            painter.setPen(textColor);
+            painter.drawText(tx, ty, label);
+            painter.setPen(QPen(lineColor, 1));
+        }
+
+        painter.setFont(unitFont);
+        painter.setPen(textColor);
+        const QString unit = QStringLiteral("MHz");
+        const int unitX = axisRect.left() + (axisRect.width() - unitFm.horizontalAdvance(unit)) / 2;
+        const int unitY = axisRect.bottom() - 1;
+        painter.drawText(unitX, unitY, unit);
+        painter.setFont(font);
+    }
 }
 
 void CsvReplay::drawMarkersOnImage(QImage &image, const QVariantList &markers) const {
@@ -893,26 +1098,35 @@ QImage CsvReplay::buildWaterfallImage(float dbmMin, float dbmMax) const {
     return image;
 }
 
-QImage CsvReplay::cropByNorm(const QImage &source, double x0Norm, double y0Norm, double x1Norm, double y1Norm) const {
-    if (source.isNull()) {
-        return QImage();
+QRect CsvReplay::normCropRect(const QSize &size, double x0Norm, double y0Norm, double x1Norm, double y1Norm) const {
+    if (size.width() <= 0 || size.height() <= 0) {
+        return QRect();
     }
+
     const double x0 = qBound(0.0, qMin(x0Norm, x1Norm), 1.0);
     const double y0 = qBound(0.0, qMin(y0Norm, y1Norm), 1.0);
     const double x1 = qBound(0.0, qMax(x0Norm, x1Norm), 1.0);
     const double y1 = qBound(0.0, qMax(y0Norm, y1Norm), 1.0);
 
-    int left = static_cast<int>(x0 * source.width());
-    int top = static_cast<int>(y0 * source.height());
-    int right = static_cast<int>(x1 * source.width());
-    int bottom = static_cast<int>(y1 * source.height());
+    int left = static_cast<int>(x0 * size.width());
+    int top = static_cast<int>(y0 * size.height());
+    int right = static_cast<int>(x1 * size.width());
+    int bottom = static_cast<int>(y1 * size.height());
 
-    left = qBound(0, left, source.width() - 1);
-    top = qBound(0, top, source.height() - 1);
-    right = qBound(left + 1, right, source.width());
-    bottom = qBound(top + 1, bottom, source.height());
+    left = qBound(0, left, size.width() - 1);
+    top = qBound(0, top, size.height() - 1);
+    right = qBound(left + 1, right, size.width());
+    bottom = qBound(top + 1, bottom, size.height());
 
-    const QRect rect(left, top, right - left, bottom - top);
+    return QRect(left, top, right - left, bottom - top);
+}
+
+QImage CsvReplay::cropByNorm(const QImage &source, double x0Norm, double y0Norm, double x1Norm, double y1Norm) const {
+    if (source.isNull()) {
+        return QImage();
+    }
+
+    const QRect rect = normCropRect(source.size(), x0Norm, y0Norm, x1Norm, y1Norm);
     if (!rect.isValid() || rect.width() <= 0 || rect.height() <= 0) {
         return QImage();
     }

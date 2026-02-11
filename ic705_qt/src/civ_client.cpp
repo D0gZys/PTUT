@@ -118,6 +118,44 @@ double decodeBcdToHz(const QByteArray &data) {
     return double(hz);
 }
 
+bool isValidBcdByte(quint8 value) {
+    return ((value & 0x0F) <= 9) && (((value >> 4) & 0x0F) <= 9);
+}
+
+QByteArray encodeLevelBcd2(int value) {
+    const int clamped = qBound(0, value, 255);
+    const int hundreds = clamped / 100;
+    const int tens = (clamped / 10) % 10;
+    const int units = clamped % 10;
+
+    QByteArray out;
+    out.reserve(2);
+    out.append(char(hundreds & 0x0F));
+    out.append(char(((tens & 0x0F) << 4) | (units & 0x0F)));
+    return out;
+}
+
+int decodeLevelBcd2(quint8 hundreds, quint8 tensUnits, bool *ok) {
+    if (ok) {
+        *ok = false;
+    }
+    // For two-byte CI-V levels, first byte uses only low nibble for hundreds.
+    if ((hundreds & 0xF0) != 0 || !isValidBcdByte(tensUnits)) {
+        return 0;
+    }
+
+    const int value = int(hundreds & 0x0F) * 100
+                    + int((tensUnits >> 4) & 0x0F) * 10
+                    + int(tensUnits & 0x0F);
+    if (value < 0 || value > 255) {
+        return 0;
+    }
+    if (ok) {
+        *ok = true;
+    }
+    return value;
+}
+
 quint16 scopeSpanCodeFromKHz(double spanKHz) {
     // IC-705 scope span code mapping (27 15 .... XX XX ....)
     // 2.5 kHz is encoded as 0x0002, not 0x0003.
@@ -243,7 +281,8 @@ CivClient::CivClient(QObject *parent)
       m_statusText("Disconnected"),
       m_freqMHz(0.0),
       m_spanKHz(5.0),
-      m_refLevel(0) {
+      m_refLevel(0),
+      m_rfGain(0) {
     connect(&m_client, &IC705Client::civFrameReceived, this,
             [this](const QByteArray &payload) { processMessage(payload); });
     connect(&m_client, &IC705Client::connectedChanged, this, [this](bool connected) {
@@ -282,6 +321,10 @@ double CivClient::spanKHz() const {
 
 int CivClient::refLevel() const {
     return m_refLevel;
+}
+
+int CivClient::rfGain() const {
+    return m_rfGain;
 }
 
 void CivClient::connectToDefault() {
@@ -340,6 +383,7 @@ void CivClient::connectWithParams(const QString &ip,
     scopeDataOn.append(char(0x01));
     m_client.sendCivCmd(0x27, scopeDataOn);
     m_client.sendCivCmd(0x03);
+    m_client.sendCivCmd(0x14, QByteArray(1, char(0x02)));
     m_client.sendCivCmd(0x27, QByteArray(1, char(0x19)));
 
     m_pollTimer.start();
@@ -430,12 +474,34 @@ bool CivClient::setScopeSpanKHz(double valueKHz) {
     return true;
 }
 
+bool CivClient::setRfGain(int value) {
+    if (!m_connected) {
+        updateStatus(QStringLiteral("Not connected"));
+        return false;
+    }
+    const int clamped = qBound(0, value, 255);
+    const QByteArray levelBcd = encodeLevelBcd2(clamped);
+    QByteArray payload;
+    payload.reserve(3);
+    payload.append(char(0x02));
+    payload.append(levelBcd);
+    qInfo().noquote() << "RF TX 14 02 payload =" << payload.mid(1).toHex(' ');
+    m_client.sendCivCmd(0x14, payload);
+    QTimer::singleShot(120, this, [this]() {
+        if (m_connected) {
+            m_client.sendCivCmd(0x14, QByteArray(1, char(0x02)));
+        }
+    });
+    return true;
+}
+
 void CivClient::onPollTimeout() {
     if (!m_connected) {
         return;
     }
-    qInfo().noquote() << "POLL TX 03 / 27 15 / 27 19";
+    qInfo().noquote() << "POLL TX 03 / 14 02 / 27 15 / 27 19";
     m_client.sendCivCmd(0x03);
+    m_client.sendCivCmd(0x14, QByteArray(1, char(0x02)));
     m_client.sendCivCmd(0x27, QByteArray(1, char(0x15)));
     m_client.sendCivCmd(0x27, QByteArray(1, char(0x19)));
 }
@@ -473,6 +539,32 @@ void CivClient::processMessage(const QByteArray &msg) {
         if (freq > 0.0 && !qFuzzyCompare(freq, m_freqMHz)) {
             m_freqMHz = freq;
             emit freqChanged();
+        }
+        return;
+    }
+
+    if (cmd == 0x14 && msg.size() >= 8 && isFromRadio) {
+        const quint8 subCmd = quint8(msg[5]);
+        if (subCmd == 0x02) {
+            const quint8 b0 = quint8(msg[6]);
+            const quint8 b1 = quint8(msg[7]);
+            bool bcdOk = false;
+            int value = decodeLevelBcd2(b0, b1, &bcdOk);
+            if (!bcdOk) {
+                // Backward-compatible fallback if a rig/bridge returns raw binary bytes.
+                value = (int(b0) << 8) | int(b1);
+            }
+            const int clamped = qBound(0, value, 255);
+            QByteArray raw;
+            raw.append(char(b0));
+            raw.append(char(b1));
+            qInfo().noquote() << "RF RX 14 02 raw =" << raw.toHex(' ')
+                              << "value =" << clamped
+                              << (bcdOk ? "(bcd)" : "(bin-fallback)");
+            if (clamped != m_rfGain) {
+                m_rfGain = clamped;
+                emit rfGainChanged();
+            }
         }
         return;
     }
